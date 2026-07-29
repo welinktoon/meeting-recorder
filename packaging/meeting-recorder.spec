@@ -8,6 +8,7 @@ from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo,
     StringFileInfo,
     StringStruct,
+    StringTable,
     VarFileInfo,
     VarStruct,
     VSVersionInfo,
@@ -60,17 +61,28 @@ version_info = VSVersionInfo(
     kids=[
         StringFileInfo(
             [
-                StringStruct("CompanyName", "welinkton"),
-                StringStruct(
-                    "FileDescription",
-                    "Запись и локальная расшифровка встреч",
-                ),
-                StringStruct("FileVersion", VERSION),
-                StringStruct("InternalName", "MeetingRecorder"),
-                StringStruct("LegalCopyright", "Copyright (c) welinkton"),
-                StringStruct("OriginalFilename", "MeetingRecorder.exe"),
-                StringStruct("ProductName", "Запись встреч"),
-                StringStruct("ProductVersion", VERSION),
+                StringTable(
+                    "041904B0",
+                    [
+                        StringStruct("CompanyName", "welinkton"),
+                        StringStruct(
+                            "FileDescription",
+                            "Запись и локальная расшифровка встреч",
+                        ),
+                        StringStruct("FileVersion", VERSION),
+                        StringStruct("InternalName", "MeetingRecorder"),
+                        StringStruct(
+                            "LegalCopyright",
+                            "Copyright (c) welinkton",
+                        ),
+                        StringStruct(
+                            "OriginalFilename",
+                            "MeetingRecorder.exe",
+                        ),
+                        StringStruct("ProductName", "Запись встреч"),
+                        StringStruct("ProductVersion", VERSION),
+                    ],
+                )
             ]
         ),
         VarFileInfo([VarStruct("Translation", [1049, 1200])]),
