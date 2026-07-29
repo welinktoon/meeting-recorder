@@ -89,10 +89,10 @@ _DIALOG_STYLE = """
 def _format_seconds(seconds: float) -> str:
     """Format a duration in seconds for compact display."""
     if seconds < 60:
-        return f"{seconds:.1f}s"
+        return f"{seconds:.1f} с"
     minutes = int(seconds // 60)
     remainder = seconds % 60
-    return f"{minutes}m {remainder:.0f}s"
+    return f"{minutes} мин {remainder:.0f} с"
 
 
 class HistoryEntryDialog(QDialog):
@@ -124,11 +124,10 @@ class HistoryEntryDialog(QDialog):
             if path:
                 self._audio_path = path
 
-        self.setWindowTitle("Transcription")
+        self.setWindowTitle("Расшифровка")
         self.setModal(True)
         self.setMinimumSize(640, 600)
         self.resize(720, 700)
-        self.setStyleSheet(_DIALOG_STYLE)
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -143,7 +142,7 @@ class HistoryEntryDialog(QDialog):
         header.setSpacing(10)
         title = QLabel(self.entry.formatted_timestamp)
         title.setObjectName("historyEntryTitle")
-        title.setAccessibleName("Transcription timestamp")
+        title.setAccessibleName("Дата и время расшифровки")
         header.addWidget(title)
         header.addStretch()
 
@@ -159,11 +158,11 @@ class HistoryEntryDialog(QDialog):
             cleanup_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
             if self.entry.cleanup_model:
                 cleanup_chip.setToolTip(
-                    f"Transcript cleaned with {_format_cleanup_info(self.entry)}"
+                    f"Текст обработан: {_format_cleanup_info(self.entry)}"
                 )
             else:
                 cleanup_chip.setToolTip(
-                    "Transcript was cleaned (model not recorded)"
+                    "Текст обработан, модель не указана"
                 )
             header.addWidget(cleanup_chip)
 
@@ -182,7 +181,7 @@ class HistoryEntryDialog(QDialog):
         body_header = QHBoxLayout()
         body_header.setContentsMargins(0, 0, 0, 0)
         body_header.setSpacing(8)
-        section_title = QLabel("Transcript")
+        section_title = QLabel("Расшифровка")
         section_title.setObjectName("historyEntrySectionTitle")
         body_header.addWidget(section_title)
         body_header.addStretch()
@@ -192,8 +191,8 @@ class HistoryEntryDialog(QDialog):
         version_row.setContentsMargins(0, 0, 0, 0)
         version_row.setSpacing(6)
         self._version_group = QButtonGroup(self)
-        self.fixed_btn = QPushButton("Fixed")
-        self.raw_btn = QPushButton("Raw")
+        self.fixed_btn = QPushButton("Обработанный")
+        self.raw_btn = QPushButton("Исходный")
         for btn in (self.fixed_btn, self.raw_btn):
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -223,23 +222,23 @@ class HistoryEntryDialog(QDialog):
         primary_actions = QHBoxLayout()
         primary_actions.setSpacing(8)
 
-        self.copy_button = PrimaryButton("Copy")
-        self.copy_button.setToolTip("Copy the currently shown transcript (Ctrl+C)")
+        self.copy_button = PrimaryButton("Копировать")
+        self.copy_button.setToolTip("Копировать показанный текст (Ctrl+C)")
         self.copy_button.set_base_minimum_size(96, 40)
         self.copy_button.clicked.connect(self._copy_shown_text)
         primary_actions.addWidget(self.copy_button)
 
-        self.copy_raw_button = Button("Copy Raw")
-        self.copy_raw_button.setToolTip("Copy the unprocessed ASR transcript")
+        self.copy_raw_button = Button("Исходный текст")
+        self.copy_raw_button.setToolTip("Копировать необработанный результат распознавания")
         self.copy_raw_button.set_base_minimum_size(96, 40)
         self.copy_raw_button.clicked.connect(self._copy_raw_text)
         self.copy_raw_button.setVisible(self._raw_text is not None)
         primary_actions.addWidget(self.copy_raw_button)
 
-        self.retranscribe_button = Button("Transcribe Again")
+        self.retranscribe_button = Button("Расшифровать снова")
         self.retranscribe_button.setObjectName("warningButton")
         self.retranscribe_button.setToolTip(
-            "Run transcription again using the current AI cleanup setting"
+            "Повторить расшифровку с текущими настройками обработки"
         )
         self.retranscribe_button.set_base_minimum_size(96, 40)
         self.retranscribe_button.clicked.connect(self._on_retranscribe)
@@ -253,12 +252,12 @@ class HistoryEntryDialog(QDialog):
         dismiss_actions.setSpacing(8)
         dismiss_actions.addStretch()
 
-        self.delete_button = DangerButton("Delete")
+        self.delete_button = DangerButton("Удалить")
         self.delete_button.set_base_minimum_size(96, 40)
         self.delete_button.clicked.connect(self._on_delete)
         dismiss_actions.addWidget(self.delete_button)
 
-        close_button = Button("Close")
+        close_button = Button("Закрыть")
         close_button.set_base_minimum_size(96, 40)
         close_button.clicked.connect(self.accept)
         dismiss_actions.addWidget(close_button)
@@ -275,16 +274,16 @@ class HistoryEntryDialog(QDialog):
         facts: list[tuple[str, str]] = []
         if self.entry.audio_duration is not None:
             facts.append(
-                ("Audio duration", _format_seconds(self.entry.audio_duration))
+                ("Длительность аудио", _format_seconds(self.entry.audio_duration))
             )
         if self.entry.transcription_time is not None:
             facts.append(
-                ("Transcription time", _format_seconds(self.entry.transcription_time))
+                ("Время расшифровки", _format_seconds(self.entry.transcription_time))
             )
         if self.entry.file_size is not None:
-            facts.append(("File size", format_file_size(self.entry.file_size)))
+            facts.append(("Размер файла", format_file_size(self.entry.file_size)))
         if self.entry.model:
-            facts.append(("Model", self.entry.model))
+            facts.append(("Модель", self.entry.model))
 
         if not facts:
             return None
@@ -295,7 +294,7 @@ class HistoryEntryDialog(QDialog):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
-        heading = QLabel("Details")
+        heading = QLabel("Сведения")
         heading.setObjectName("historyEntrySectionTitle")
         layout.addWidget(heading)
 
@@ -371,9 +370,9 @@ class HistoryEntryDialog(QDialog):
         """Confirm deletion, then request delete and close."""
         reply = QMessageBox.question(
             self,
-            "Delete Entry",
-            "Delete this transcription from history?\n\n"
-            "The saved recording file (if any) will be kept.",
+            "Удалить расшифровку",
+            "Удалить эту расшифровку из истории?\n\n"
+            "Сохранённый аудиофайл останется на компьютере.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

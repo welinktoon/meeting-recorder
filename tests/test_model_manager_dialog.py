@@ -73,7 +73,7 @@ class TestModelRows(_DialogTestCase):
         self.assertTrue(row.download_button.isVisibleTo(dialog))
         self.assertFalse(row.delete_button.isVisibleTo(dialog))
         self.assertFalse(row.set_active_button.isVisibleTo(dialog))
-        self.assertEqual(row.badge.text(), "Not downloaded")
+        self.assertEqual(row.badge.text(), "Не скачана")
         self.assertEqual(row.size_label.text(), "~76 MB")
 
     def test_cached_row_shows_real_size_and_delete(self):
@@ -85,7 +85,7 @@ class TestModelRows(_DialogTestCase):
         self.assertTrue(row.delete_button.isVisibleTo(dialog))
         self.assertTrue(row.delete_button.isEnabled())
         self.assertTrue(row.set_active_button.isVisibleTo(dialog))
-        self.assertEqual(row.badge.text(), "Downloaded")
+        self.assertEqual(row.badge.text(), "Установлена")
         self.assertEqual(row.size_label.text(), "76 MB")
 
     def test_active_cached_row_hides_set_active(self):
@@ -94,7 +94,7 @@ class TestModelRows(_DialogTestCase):
             active_model="base",
         )
         row = dialog.rows["base"]
-        self.assertEqual(row.badge.text(), "Active")
+        self.assertEqual(row.badge.text(), "Выбрана")
         self.assertTrue(row.property("active"))
         self.assertFalse(row.set_active_button.isVisibleTo(dialog))
         self.assertFalse(dialog.rows["tiny"].property("active"))
@@ -106,7 +106,7 @@ class TestModelRows(_DialogTestCase):
         )
         row = dialog.rows["base"]
         self.assertFalse(row.delete_button.isEnabled())
-        self.assertIn("In use", row.delete_button.toolTip())
+        self.assertIn("используется", row.delete_button.toolTip())
 
     def test_refresh_moves_delete_lock_when_loaded_model_changes(self):
         """After a Set Active reload, Delete must follow the newly loaded model."""
@@ -157,7 +157,7 @@ class TestDownloadingState(_DialogTestCase):
         dialog = self._make_dialog()
         dialog.set_downloading("tiny")
 
-        self.assertEqual(dialog.rows["tiny"].badge.text(), "Downloading…")
+        self.assertEqual(dialog.rows["tiny"].badge.text(), "Загрузка…")
         self.assertFalse(dialog.rows["tiny"].download_button.isEnabled())
         # Only one download at a time: other rows' Download disabled too.
         self.assertFalse(dialog.rows["small"].download_button.isEnabled())
@@ -169,7 +169,7 @@ class TestDownloadingState(_DialogTestCase):
         dialog = self._make_dialog()
         dialog.set_downloading("tiny")
         dialog.finish_download("tiny", success=False)
-        self.assertIn("failed", dialog.message_label.text())
+        self.assertIn("Не удалось", dialog.message_label.text())
 
 
 class TestEnvBlocked(_DialogTestCase):
@@ -260,7 +260,7 @@ class TestCompactButtons(_DialogTestCase):
             (
                 button
                 for button in dialog.findChildren(Button)
-                if button.text() == "Open Folder"
+                if button.text() == "Открыть папку"
             ),
             None,
         )

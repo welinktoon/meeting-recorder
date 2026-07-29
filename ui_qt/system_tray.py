@@ -6,10 +6,15 @@ import logging
 from pathlib import Path
 from typing import Optional, Callable
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
-from PyQt6.QtGui import QAction, QIcon, QPixmap, QColor, QPainter
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import pyqtSignal
 
 logger = logging.getLogger(__name__)
+APP_ICON = (
+    Path(__file__).resolve().parent
+    / "assets"
+    / "meeting-recorder-logo.ico"
+)
 
 
 class SystemTrayManager(QSystemTrayIcon):
@@ -39,60 +44,35 @@ class SystemTrayManager(QSystemTrayIcon):
 
     def _setup_icon(self):
         """Setup the tray icon."""
-        # Try to load the icon from the res directory
-        icon_path = Path("res/icon.png")
-
-        if icon_path.exists():
-            self.setIcon(QIcon(str(icon_path)))
-        else:
-            # Create a simple gradient icon if the file doesn't exist
-            pixmap = QPixmap(64, 64)
-            pixmap.fill(Qt.GlobalColor.transparent)
-
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-            # Draw gradient background
-            from PyQt6.QtGui import QLinearGradient
-            gradient = QLinearGradient(0, 0, 64, 64)
-            gradient.setColorAt(0, QColor(99, 102, 241))
-            gradient.setColorAt(1, QColor(139, 92, 246))
-
-            painter.fillRect(pixmap.rect(), gradient)
-
-            # Draw circle
-            painter.setPen(Qt.GlobalColor.white)
-            painter.drawEllipse(16, 16, 32, 32)
-            painter.end()
-
-            self.setIcon(QIcon(pixmap))
+        self.setIcon(QIcon(str(APP_ICON)))
+        self.setToolTip("Запись встреч")
 
     def _setup_menu(self):
         """Setup the tray context menu."""
         self.menu = QMenu()  # Styled by the app-wide theme's QMenu rules
 
         # Show action
-        show_action = self.menu.addAction("Show")
+        show_action = self.menu.addAction("Показать")
         show_action.triggered.connect(self._on_show)
 
         # Hide action
-        hide_action = self.menu.addAction("Hide")
+        hide_action = self.menu.addAction("Скрыть")
         hide_action.triggered.connect(self._on_hide)
 
         # Toggle recording action
         self.menu.addSeparator()
-        toggle_action = self.menu.addAction("Start Recording")
-        toggle_action.triggered.connect(self._on_toggle)
+        self.toggle_action = self.menu.addAction("Начать запись")
+        self.toggle_action.triggered.connect(self._on_toggle)
 
         # Settings action
         self.menu.addSeparator()
-        settings_action = self.menu.addAction("Settings")
+        settings_action = self.menu.addAction("Настройки")
         settings_action.setMenuRole(QAction.MenuRole.NoRole)
         settings_action.triggered.connect(self._on_settings)
 
         # Exit action
         self.menu.addSeparator()
-        exit_action = self.menu.addAction("Exit")
+        exit_action = self.menu.addAction("Выйти")
         exit_action.setMenuRole(QAction.MenuRole.NoRole)
         exit_action.triggered.connect(self._on_exit)
 
@@ -146,11 +126,6 @@ class SystemTrayManager(QSystemTrayIcon):
 
     def set_recording(self, is_recording: bool):
         """Update the menu based on recording state."""
-        for action in self.menu.actions():
-            if "Recording" in action.text():
-                if is_recording:
-                    action.setText("Stop Recording")
-                else:
-                    action.setText("Start Recording")
-                break
-
+        self.toggle_action.setText(
+            "Остановить запись" if is_recording else "Начать запись"
+        )

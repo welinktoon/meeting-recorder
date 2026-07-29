@@ -40,7 +40,7 @@ class TranscriptionTabBase(QWidget):
     # Subclass configuration
     CONTENT_OBJECT_NAME = "transcriptionTabContent"
     INITIAL_STATUS = ""
-    TRANSCRIPT_PLACEHOLDER = "Transcription will appear here..."
+    TRANSCRIPT_PLACEHOLDER = "Здесь появится расшифровка…"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -80,7 +80,7 @@ class TranscriptionTabBase(QWidget):
         # Model selection card
         model_card = Card()
 
-        model_label = QLabel("Transcription Engine")
+        model_label = QLabel("Модель распознавания")
         model_label.setObjectName("headerLabel")
         model_label.setFont(QFont("Segoe UI", 13))
         model_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -123,7 +123,7 @@ class TranscriptionTabBase(QWidget):
         self._build_content_after_status(content_layout)
 
         # Transcription display card (collapsible to reclaim vertical space)
-        self.transcription_card = HeaderCard("Transcription", collapsible=True)
+        self.transcription_card = HeaderCard("Расшифровка", collapsible=True)
 
         self.version_toggle = QWidget()
         version_row = QHBoxLayout(self.version_toggle)
@@ -132,8 +132,8 @@ class TranscriptionTabBase(QWidget):
         version_row.addStretch()
 
         self._version_group = QButtonGroup(self)
-        self.fixed_btn = QPushButton("Fixed")
-        self.raw_btn = QPushButton("Raw")
+        self.fixed_btn = QPushButton("Обработанный")
+        self.raw_btn = QPushButton("Исходный")
         for btn in (self.fixed_btn, self.raw_btn):
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)

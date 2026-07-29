@@ -35,11 +35,11 @@ logger = logging.getLogger(__name__)
 
 if USE_PYNPUT_BACKEND:
     HOTKEY_CAPTURE_FAILURE_MESSAGE = (
-        "Could not capture hotkey. Enable Accessibility and Input Monitoring "
-        "permissions for OpenWhisper in macOS System Settings, then try again."
+        "Не удалось определить сочетание клавиш. Разрешите доступ к управлению "
+        "и отслеживанию ввода в системных настройках, затем повторите попытку."
     )
 else:
-    HOTKEY_CAPTURE_FAILURE_MESSAGE = "Could not capture hotkey. Please try again."
+    HOTKEY_CAPTURE_FAILURE_MESSAGE = "Не удалось определить сочетание клавиш. Попробуйте ещё раз."
 
 
 class ClickableLineEdit(QLineEdit):
@@ -169,7 +169,7 @@ class HotkeyDialog(QDialog):
     def __init__(self, parent=None):
         """Initialize hotkey dialog."""
         super().__init__(parent)
-        self.setWindowTitle("Hotkey Configuration")
+        self.setWindowTitle("Горячие клавиши")
         self.setMinimumSize(500, 500)
 
         # State
@@ -191,22 +191,22 @@ class HotkeyDialog(QDialog):
         layout.setSpacing(16)
 
         # Header
-        title = QLabel("Hotkey Configuration")
+        title = QLabel("Настройка горячих клавиш")
         title.setObjectName("headerLabel")
         layout.addWidget(title)
 
         # Instructions
         if USE_PYNPUT_BACKEND:
             instructions_text = (
-                "Click on a field to record a new hotkey.\n"
-                "Hold your modifiers (⌘ ⌃ ⌥ ⇧) and press a key.\n"
-                "Tip: Control+Option combos avoid clashing with system shortcuts."
+                "Нажмите на поле, чтобы задать новое сочетание.\n"
+                "Удерживайте модификаторы (⌘ ⌃ ⌥ ⇧) и нажмите клавишу.\n"
+                "Сочетания Control+Option реже конфликтуют с системными командами."
             )
         else:
             instructions_text = (
-                "Click on a field to record a new hotkey.\n"
-                "Press the desired key combination.\n"
-                "Note: Numpad keys (kp 1, kp *, etc.) are distinct from regular keys."
+                "Нажмите на поле, чтобы задать новое сочетание.\n"
+                "Затем нажмите нужную комбинацию клавиш.\n"
+                "Клавиши цифрового блока отличаются от обычных цифровых клавиш."
             )
         instructions = QLabel(instructions_text)
         instructions.setObjectName("infoLabel")
@@ -215,7 +215,7 @@ class HotkeyDialog(QDialog):
         layout.addSpacing(12)
 
         # Record toggle hotkey
-        record_label = QLabel("Record Toggle:")
+        record_label = QLabel("Начать или остановить запись:")
         layout.addWidget(record_label)
 
         self.record_input = self._create_hotkey_input()
@@ -225,7 +225,7 @@ class HotkeyDialog(QDialog):
         layout.addSpacing(12)
 
         # Cancel hotkey
-        cancel_label = QLabel("Cancel Recording:")
+        cancel_label = QLabel("Отменить запись:")
         layout.addWidget(cancel_label)
 
         self.cancel_input = self._create_hotkey_input()
@@ -235,7 +235,7 @@ class HotkeyDialog(QDialog):
         layout.addSpacing(12)
 
         # Enable/Disable hotkey
-        enable_label = QLabel("Enable/Disable:")
+        enable_label = QLabel("Включить или выключить:")
         layout.addWidget(enable_label)
 
         self.enable_input = self._create_hotkey_input()
@@ -245,7 +245,7 @@ class HotkeyDialog(QDialog):
         layout.addSpacing(12)
 
         # Minimize-to-tray hotkey
-        minimize_label = QLabel("Minimize to Tray:")
+        minimize_label = QLabel("Свернуть в трей:")
         layout.addWidget(minimize_label)
 
         self.minimize_input = self._create_hotkey_input()
@@ -255,7 +255,7 @@ class HotkeyDialog(QDialog):
         layout.addSpacing(16)
 
         # Reset button
-        reset_btn = Button("Reset to Defaults")
+        reset_btn = Button("Сбросить")
         reset_btn.setMaximumWidth(200)
         reset_btn.clicked.connect(self._reset_to_defaults)
         layout.addWidget(reset_btn)
@@ -268,11 +268,11 @@ class HotkeyDialog(QDialog):
 
         button_layout.addStretch()
 
-        cancel_btn = Button("Cancel")
+        cancel_btn = Button("Отмена")
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
 
-        save_btn = PrimaryButton("Save Hotkeys")
+        save_btn = PrimaryButton("Сохранить")
         save_btn.clicked.connect(self._save_hotkeys)
         button_layout.addWidget(save_btn)
 
@@ -284,7 +284,7 @@ class HotkeyDialog(QDialog):
         input_field.setObjectName("hotkeyInput")
         input_field.setReadOnly(True)
         input_field.setMinimumHeight(36)
-        input_field.setPlaceholderText("Click to set hotkey")
+        input_field.setPlaceholderText("Нажмите, чтобы задать сочетание")
         return input_field
 
     @staticmethod
@@ -306,7 +306,7 @@ class HotkeyDialog(QDialog):
             self.capturing = hotkey_type
             self.current_input_field = input_field
 
-            input_field.setText("Press keys...")
+            input_field.setText("Нажмите клавиши…")
             self._set_capturing_state(input_field, True)
 
             logger.info(f"Capturing hotkey for: {hotkey_type}")
@@ -322,7 +322,7 @@ class HotkeyDialog(QDialog):
             self._update_displays()
             self.capturing = None
             self.current_input_field = None
-            QMessageBox.warning(self, "Hotkey Capture Failed", HOTKEY_CAPTURE_FAILURE_MESSAGE)
+            QMessageBox.warning(self, "Не удалось задать сочетание", HOTKEY_CAPTURE_FAILURE_MESSAGE)
 
     def _on_hotkey_captured(self, hotkey: str):
         """Handle captured hotkey."""
@@ -347,7 +347,7 @@ class HotkeyDialog(QDialog):
         self._update_displays()
         self.capturing = None
         self.current_input_field = None
-        QMessageBox.warning(self, "Hotkey Capture Failed", message)
+        QMessageBox.warning(self, "Не удалось задать сочетание", message)
 
     def _reset_input_styles(self):
         """Reset all input fields to the default (non-capturing) style."""

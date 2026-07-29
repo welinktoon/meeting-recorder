@@ -42,7 +42,7 @@ class CleanupRuleDialog(QDialog):
             and self._polished.casefold() != self._original.casefold()
         )
         self.setWindowTitle(
-            "Confirm Learned Rule" if original is not None else "Edit Learned Rule"
+            "Подтверждение правила" if original is not None else "Изменение правила"
         )
         self.setMinimumSize(460, 280 if self._offer_choice else 260)
         self.resize(520, 340 if self._offer_choice else 300)
@@ -57,14 +57,14 @@ class CleanupRuleDialog(QDialog):
         layout.setSpacing(12)
 
         title = QLabel(
-            "Confirm Learned Rule" if original is not None else "Edit Learned Rule"
+            "Подтвердите правило" if original is not None else "Измените правило"
         )
         title.setObjectName("headerLabel")
         title.setFont(QFont("Segoe UI", 14, QFont.Weight.DemiBold))
         layout.addWidget(title)
 
         if original is not None and original.strip():
-            said = QLabel(f'You said: "{original.strip()}"')
+            said = QLabel(f'Вы сказали: «{original.strip()}»')
             said.setObjectName("infoLabel")
             said.setWordWrap(True)
             layout.addWidget(said)
@@ -77,14 +77,14 @@ class CleanupRuleDialog(QDialog):
 
         if self._offer_choice:
             info = QLabel(
-                "AI polished your instruction into a clearer rule for the cleanup "
-                "prompt. We recommend the polished version, or you can keep exactly "
-                "what you typed. Edit either choice below before saving."
+                "ИИ преобразовал инструкцию в более понятное правило. Рекомендуется "
+                "улучшенный вариант, но можно сохранить исходную формулировку. "
+                "Перед сохранением текст можно изменить."
             )
         else:
             info = QLabel(
-                "This rule is added to the cleanup prompt on every transcript. "
-                "Edit it if needed, then save."
+                "Это правило будет применяться при обработке каждой расшифровки. "
+                "При необходимости измените его и сохраните."
             )
         info.setObjectName("infoLabel")
         info.setWordWrap(True)
@@ -94,31 +94,31 @@ class CleanupRuleDialog(QDialog):
         self.rule_edit.setAcceptRichText(False)
         self.rule_edit.setFont(QFont("Segoe UI", 12))
         self.rule_edit.setPlainText(rule or "")
-        self.rule_edit.setPlaceholderText("Enter the rule…")
+        self.rule_edit.setPlaceholderText("Введите правило…")
         self.rule_edit.setMinimumHeight(80)
         layout.addWidget(self.rule_edit, stretch=1)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
 
-        cancel_btn = Button("Cancel")
+        cancel_btn = Button("Отмена")
         cancel_btn.clicked.connect(self.reject)
         buttons.addWidget(cancel_btn)
 
         if self._offer_choice:
-            as_typed_btn = Button("Use Exactly as Typed")
-            as_typed_btn.setToolTip("Save your original wording without AI changes")
+            as_typed_btn = Button("Сохранить исходный текст")
+            as_typed_btn.setToolTip("Сохранить вашу формулировку без изменений ИИ")
             as_typed_btn.clicked.connect(self._accept_as_typed)
             buttons.addWidget(as_typed_btn)
 
-            polished_btn = PrimaryButton("Use Polished (Recommended)")
+            polished_btn = PrimaryButton("Использовать улучшенный")
             polished_btn.setToolTip(
-                "Save the AI-polished rule (or your edits to it)"
+                "Сохранить улучшенное ИИ правило с вашими правками"
             )
             polished_btn.clicked.connect(self._accept_polished)
             buttons.addWidget(polished_btn)
         else:
-            save_btn = PrimaryButton("Save Rule")
+            save_btn = PrimaryButton("Сохранить правило")
             save_btn.clicked.connect(self.accept)
             buttons.addWidget(save_btn)
 

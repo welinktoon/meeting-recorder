@@ -74,14 +74,15 @@ class TestMainWindowCompactMode(unittest.TestCase):
         self.assertTrue(self.window.compact_controller.isVisibleTo(self.window))
         self.assertFalse(self.window.tabbed_content.isVisibleTo(self.window))
         self.assertFalse(self.window.history_edge_tab.isVisibleTo(self.window))
-        self.assertEqual(self.window.compact_button.text(), "Full Size")
+        self.assertEqual(self.window.compact_button.text(), "Полный размер")
 
         self.window.set_compact_mode(False)
 
         self.assertFalse(self.window._compact_mode)
         self.assertEqual(self.window.geometry(), full_geometry)
-        self.assertTrue(self.window.tabbed_content.isVisibleTo(self.window))
-        self.assertEqual(self.window.compact_button.text(), "Compact")
+        self.assertTrue(self.window.voice_notes_workspace.isVisibleTo(self.window))
+        self.assertFalse(self.window.tabbed_content.isVisibleTo(self.window))
+        self.assertEqual(self.window.compact_button.text(), "Компактный режим")
 
     def test_compact_controls_delegate_to_quick_record(self):
         """Compact controls use the existing recording signal path."""
@@ -118,7 +119,7 @@ class TestMainWindowCompactMode(unittest.TestCase):
         self.window._restore_compact_mode()
 
         self.assertTrue(self.window._compact_mode)
-        self.assertEqual(self.window.compact_button.text(), "Full Size")
+        self.assertEqual(self.window.compact_button.text(), "Полный размер")
 
     def test_collapsed_transcript_caps_tall_saved_geometry_on_restore(self):
         """Collapsed startup does not reserve space for the hidden transcript."""
@@ -143,7 +144,7 @@ class TestMainWindowCompactMode(unittest.TestCase):
             self.window.height(),
             config.MAIN_WINDOW_COLLAPSED_RESTORE_MAX_HEIGHT,
         )
-        self.assertEqual(self.window.width(), saved_geometry["width"])
+        self.assertEqual(self.window.width(), config.MAIN_WINDOW_DEFAULT_WIDTH)
 
 
 if __name__ == "__main__":

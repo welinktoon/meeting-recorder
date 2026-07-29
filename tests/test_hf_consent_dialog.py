@@ -38,7 +38,7 @@ class TestConsentDialogCopy(_QtTestCase):
 
     def test_never_dialog_explains_policy(self):
         dialog = HuggingFaceConsentDialog("base", HuggingFaceAccessPolicy.NEVER)
-        self.assertIn("Never connect", dialog._body_text())
+        self.assertIn("запрещено подключение", dialog._body_text())
 
     def test_env_blocked_dialog_explains_environment(self):
         dialog = HuggingFaceConsentDialog(

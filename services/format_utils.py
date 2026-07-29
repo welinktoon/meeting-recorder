@@ -14,12 +14,12 @@ def format_timestamp(iso_timestamp: str) -> str:
         iso_timestamp: Timestamp string as stored (``datetime.isoformat()``).
 
     Returns:
-        Display string like ``"Jun 28, 2026 01:42 PM"``, or the raw input if
+        Display string like ``"28.06.2026 13:42"``, or the raw input if
         it cannot be parsed.
     """
     try:
         dt = datetime.fromisoformat(iso_timestamp)
-        return dt.strftime("%b %d, %Y %I:%M %p")
+        return dt.strftime("%d.%m.%Y %H:%M")
     except Exception:
         return iso_timestamp
 

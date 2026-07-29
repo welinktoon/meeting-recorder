@@ -152,13 +152,13 @@ class HistoryItemWidget(QFrame):
             chip_text = (
                 format_file_size(self.entry.file_size)
                 if self.entry.file_size
-                else "Audio"
+                else "Аудио"
             )
             audio_chip = QLabel(chip_text)
             audio_chip.setObjectName("historyAudioChip")
             audio_chip.setFont(QFont("Segoe UI", 9))
             audio_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            audio_chip.setToolTip("Recording available — can be transcribed again")
+            audio_chip.setToolTip("Запись доступна для повторной расшифровки")
             audio_chip.setFixedHeight(20)
             top_row.addWidget(audio_chip, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -197,11 +197,11 @@ class HistoryItemWidget(QFrame):
             )
             if self.entry.cleanup_model:
                 cleanup_chip.setToolTip(
-                    f"Transcript cleaned with {_format_cleanup_info(self.entry)}"
+                    f"Текст обработан: {_format_cleanup_info(self.entry)}"
                 )
             else:
                 cleanup_chip.setToolTip(
-                    "Transcript was cleaned (model not recorded)"
+                    "Текст обработан, модель не указана"
                 )
             cleanup_row = QHBoxLayout()
             cleanup_row.setContentsMargins(0, 0, 0, 0)
@@ -230,13 +230,12 @@ class HistoryItemWidget(QFrame):
             footer.setSpacing(8)
             footer.addStretch()
 
-            self.retranscribe_btn = QPushButton("Transcribe again")
+            self.retranscribe_btn = QPushButton("Расшифровать снова")
             self.retranscribe_btn.setObjectName("retranscribeBtn")
             self.retranscribe_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.retranscribe_btn.setFixedHeight(28)
             self.retranscribe_btn.setToolTip(
-                "Run this recording through the current model "
-                "using the current AI cleanup setting"
+                "Повторить расшифровку текущей моделью и применить настройки обработки"
             )
             self.retranscribe_btn.clicked.connect(
                 lambda: self.retranscribe_requested.emit(self._audio_path)
@@ -316,29 +315,29 @@ class HistoryItemWidget(QFrame):
 
         # Copy actions (Fixed is the cleaned transcript when cleanup ran)
         if self.entry.raw_text:
-            copy_fixed = menu.addAction("Copy Fixed")
+            copy_fixed = menu.addAction("Копировать обработанный текст")
             copy_fixed.triggered.connect(
                 lambda: self.copy_requested.emit(self.entry.id)
             )
-            copy_raw = menu.addAction("Copy Raw")
+            copy_raw = menu.addAction("Копировать исходный текст")
             copy_raw.triggered.connect(
                 lambda: self.copy_raw_requested.emit(self.entry.id)
             )
         else:
-            copy_action = menu.addAction("Copy Text")
+            copy_action = menu.addAction("Копировать текст")
             copy_action.triggered.connect(
                 lambda: self.copy_requested.emit(self.entry.id)
             )
 
         if self._audio_path:
-            retranscribe_action = menu.addAction("Transcribe again")
+            retranscribe_action = menu.addAction("Расшифровать снова")
             retranscribe_action.triggered.connect(
                 lambda: self.retranscribe_requested.emit(self._audio_path)
             )
 
         menu.addSeparator()
 
-        delete_action = menu.addAction("Delete")
+        delete_action = menu.addAction("Удалить")
         delete_action.triggered.connect(
             lambda: self.delete_requested.emit(self.entry.id)
         )
@@ -414,7 +413,7 @@ class HistorySidebar(QWidget):
         self.menu_btn.clicked.connect(self._show_header_menu)
         header_layout.addWidget(self.menu_btn)
 
-        self.header_label = QLabel("History")
+        self.header_label = QLabel("История")
         self.header_label.setObjectName("sidebarHeader")
         self.header_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         header_layout.addWidget(self.header_label)
@@ -427,7 +426,7 @@ class HistorySidebar(QWidget):
         # scrolling sections)
         self.search_input = QLineEdit()
         self.search_input.setObjectName("historySearchInput")
-        self.search_input.setPlaceholderText("Search history...")
+        self.search_input.setPlaceholderText("Поиск в истории…")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.setFixedHeight(32)
         self.search_input.textChanged.connect(self._on_search_text_changed)
@@ -457,7 +456,7 @@ class HistorySidebar(QWidget):
         scroll_layout.setSpacing(12)
         scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        self.history_header = QLabel("HISTORY")
+        self.history_header = QLabel("РАСШИФРОВКИ")
         self.history_header.setObjectName("sectionHeader")
         self.history_header.setFont(QFont("Segoe UI", 11, QFont.Weight.DemiBold))
         scroll_layout.addWidget(self.history_header)
@@ -744,10 +743,10 @@ class HistorySidebar(QWidget):
         if should_confirm is not False:
             confirmation = QMessageBox(self)
             confirmation.setIcon(QMessageBox.Icon.Warning)
-            confirmation.setWindowTitle("Delete History Entry")
-            confirmation.setText("Delete this transcription from history?")
+            confirmation.setWindowTitle("Удалить расшифровку")
+            confirmation.setText("Удалить эту расшифровку из истории?")
             confirmation.setInformativeText(
-                "This cannot be undone."
+                "Это действие нельзя отменить."
             )
             confirmation.setStandardButtons(
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
@@ -762,13 +761,12 @@ class HistorySidebar(QWidget):
                 else None
             )
             if audio_path:
-                audio_label = QLabel("Delete saved audio file too?", confirmation)
+                audio_label = QLabel("Удалить также сохранённый аудиофайл?", confirmation)
                 audio_choice = QComboBox(confirmation)
-                audio_choice.addItem("No — keep the audio file", False)
-                audio_choice.addItem("Yes — permanently delete it", True)
+                audio_choice.addItem("Нет — оставить аудиофайл", False)
+                audio_choice.addItem("Да — удалить безвозвратно", True)
                 audio_choice.setToolTip(
-                    "Choose whether the recording attached to this transcript "
-                    "should also be deleted"
+                    "Выберите, нужно ли удалить исходную запись вместе с расшифровкой"
                 )
 
                 message_layout = confirmation.layout()
@@ -784,7 +782,7 @@ class HistorySidebar(QWidget):
                         columns,
                     )
 
-            dont_ask_again = QCheckBox("Don't ask me again", confirmation)
+            dont_ask_again = QCheckBox("Больше не спрашивать", confirmation)
             confirmation.setCheckBox(dont_ask_again)
 
             if confirmation.exec() != QMessageBox.StandardButton.Yes:
@@ -818,18 +816,18 @@ class HistorySidebar(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(_MENU_STYLESHEET)
 
-        export_action = menu.addAction("Export history…")
+        export_action = menu.addAction("Экспортировать историю…")
         export_action.triggered.connect(self._on_export_history)
 
-        open_folder_action = menu.addAction("Open recordings folder")
+        open_folder_action = menu.addAction("Открыть папку записей")
         open_folder_action.triggered.connect(self._on_open_recordings_folder)
 
         menu.addSeparator()
 
-        clear_action = menu.addAction("Clear history")
+        clear_action = menu.addAction("Очистить историю")
         clear_action.triggered.connect(self._on_clear_history)
 
-        clear_all_action = menu.addAction("Clear history + recordings")
+        clear_all_action = menu.addAction("Удалить историю и записи")
         clear_all_action.triggered.connect(self._on_clear_history_and_recordings)
 
         menu.exec(self.menu_btn.mapToGlobal(self.menu_btn.rect().bottomLeft()))
@@ -838,8 +836,8 @@ class HistorySidebar(QWidget):
         """Clear all history entries after confirmation (keeps recordings)."""
         reply = QMessageBox.question(
             self,
-            "Clear History",
-            "Delete all history entries?\n\nSaved recordings will be kept.",
+            "Очистить историю",
+            "Удалить все расшифровки из истории?\n\nСохранённые записи останутся.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -853,9 +851,9 @@ class HistorySidebar(QWidget):
         """Clear all history entries and saved recordings after confirmation."""
         reply = QMessageBox.question(
             self,
-            "Clear History and Recordings",
-            "Delete all history entries AND permanently delete all saved "
-            "recordings from disk?\n\nThis cannot be undone.",
+            "Удалить историю и записи",
+            "Удалить всю историю и безвозвратно удалить сохранённые "
+            "записи с диска?\n\nЭто действие нельзя отменить.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -869,14 +867,14 @@ class HistorySidebar(QWidget):
         """Export all history entries to a text or JSON file."""
         entries = history_manager.get_history()
         if not entries:
-            QMessageBox.information(self, "Export History", "No history to export.")
+            QMessageBox.information(self, "Экспорт истории", "В истории пока нет записей.")
             return
 
         file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
-            "Export History",
-            "openwhisper_history.txt",
-            "Text Files (*.txt);;JSON Files (*.json);;All Files (*)",
+            "Экспорт истории",
+            "история_расшифровок.txt",
+            "Текстовые файлы (*.txt);;Файлы JSON (*.json);;Все файлы (*)",
         )
         if not file_path:
             return
@@ -914,16 +912,16 @@ class HistorySidebar(QWidget):
                     for entry in entries:
                         f.write(f"[{entry.formatted_timestamp}] {entry.model}\n")
                         if _entry_was_cleaned(entry):
-                            f.write(f"Cleanup: {_format_cleanup_info(entry)}\n")
+                            f.write(f"Обработка: {_format_cleanup_info(entry)}\n")
                         f.write(f"{entry.text}\n")
                         if entry.raw_text:
-                            f.write(f"\nRaw:\n{entry.raw_text}\n")
+                            f.write(f"\nИсходный текст:\n{entry.raw_text}\n")
                         f.write("-" * 60 + "\n\n")
             logger.info(f"Exported {len(entries)} history entries to {file_path}")
         except Exception as e:
             logger.error(f"Failed to export history: {e}")
             QMessageBox.warning(
-                self, "Export Failed", f"Could not export history:\n{e}"
+                self, "Ошибка экспорта", f"Не удалось экспортировать историю:\n{e}"
             )
 
     def _on_open_recordings_folder(self):

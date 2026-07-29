@@ -20,7 +20,7 @@ class CleanupPromptDialog(QDialog):
             parent: Optional parent widget.
         """
         super().__init__(parent)
-        self.setWindowTitle("Edit Cleanup Prompt")
+        self.setWindowTitle("Инструкция обработки текста")
         self.setMinimumSize(520, 420)
         self.resize(560, 480)
         self._setup_ui(prompt)
@@ -31,14 +31,14 @@ class CleanupPromptDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(12)
 
-        title = QLabel("Cleanup Prompt")
+        title = QLabel("Инструкция обработки")
         title.setObjectName("headerLabel")
         title.setFont(QFont("Segoe UI", 14, QFont.Weight.DemiBold))
         layout.addWidget(title)
 
         info = QLabel(
-            "Instructions sent to the AI when cleaning up a transcript. "
-            "Describe how you want the text rewritten."
+            "Эта инструкция отправляется ИИ при обработке расшифровки. "
+            "Опишите, как нужно улучшать и форматировать текст."
         )
         info.setObjectName("infoLabel")
         info.setWordWrap(True)
@@ -48,17 +48,17 @@ class CleanupPromptDialog(QDialog):
         self.prompt_edit.setAcceptRichText(False)
         self.prompt_edit.setFont(QFont("Segoe UI", 12))
         self.prompt_edit.setPlainText(prompt or "")
-        self.prompt_edit.setPlaceholderText("Enter cleanup instructions…")
+        self.prompt_edit.setPlaceholderText("Введите инструкцию обработки…")
         layout.addWidget(self.prompt_edit, stretch=1)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
 
-        cancel_btn = Button("Cancel")
+        cancel_btn = Button("Отмена")
         cancel_btn.clicked.connect(self.reject)
         buttons.addWidget(cancel_btn)
 
-        save_btn = PrimaryButton("Use Prompt")
+        save_btn = PrimaryButton("Применить")
         save_btn.clicked.connect(self.accept)
         buttons.addWidget(save_btn)
 

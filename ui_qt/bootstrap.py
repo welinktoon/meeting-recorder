@@ -5,6 +5,7 @@ from __future__ import annotations
 import faulthandler
 import logging
 import signal
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -13,6 +14,75 @@ from ui_qt.startup_profiler import StartupProfiler
 
 _CRASH_LOG_FILE = None
 _QT_MESSAGE_HANDLER_INSTALLED = False
+_INSTANCE_MUTEX = None
+_INSTANCE_MUTEX_NAME = "Local\\MeetingRecorder.OpenWhisper.SingleInstance"
+
+
+def _restore_existing_windows_instance() -> None:
+    """Restore the largest existing main window when a second copy is run."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    candidates = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _lparam):
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title, length + 1)
+        if title.value != "Запись встреч":
+            return True
+        rect = wintypes.RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            area = max(0, rect.right - rect.left) * max(
+                0, rect.bottom - rect.top
+            )
+            candidates.append((area, hwnd))
+        return True
+
+    user32.EnumWindows(visit, 0)
+    if not candidates:
+        return
+    _area, hwnd = max(candidates)
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    user32.BringWindowToTop(hwnd)
+    user32.SetForegroundWindow(hwnd)
+
+
+def acquire_single_instance() -> bool:
+    """Prevent duplicate recorder processes and restore the existing window."""
+    global _INSTANCE_MUTEX
+    if sys.platform != "win32":
+        return True
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, _INSTANCE_MUTEX_NAME)
+    if not handle:
+        return True
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        _restore_existing_windows_instance()
+        return False
+    _INSTANCE_MUTEX = handle
+    return True
+
+
+def release_single_instance() -> None:
+    """Release the Windows instance mutex during a normal shutdown."""
+    global _INSTANCE_MUTEX
+    if sys.platform != "win32" or not _INSTANCE_MUTEX:
+        return
+    import ctypes
+
+    ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(_INSTANCE_MUTEX)
+    _INSTANCE_MUTEX = None
 
 
 def setup_logging() -> None:
@@ -177,6 +247,8 @@ def run_with_ui_pulse(fn):
 
 def main() -> int:
     """Main application entry point."""
+    if not acquire_single_instance():
+        return 0
     profiler = StartupProfiler()
     profiler.mark("main_entered")
     summary_logged = False
@@ -212,14 +284,14 @@ def main() -> int:
         loading_screen.show()
         profiler.mark("loading_screen_shown")
 
-        loading_screen.update_status("Initializing components...")
-        loading_screen.update_progress("Preparing startup...")
+        loading_screen.update_status("Подготовка компонентов…")
+        loading_screen.update_progress("Запуск приложения…")
         loading_screen.repaint()
         process_qt_events()
         profiler.mark("first_visual_flushed")
 
-        loading_screen.update_status("Loading application...")
-        loading_screen.update_progress("Loading runtime components...")
+        loading_screen.update_status("Загрузка приложения…")
+        loading_screen.update_progress("Подключение компонентов…")
         process_qt_events()
 
         profiler.mark("late_imports_started")
@@ -228,15 +300,15 @@ def main() -> int:
         )
         profiler.mark("late_imports_finished")
 
-        loading_screen.update_status("Creating interface...")
-        loading_screen.update_progress("Setting up windows...")
+        loading_screen.update_status("Создание интерфейса…")
+        loading_screen.update_progress("Настройка окон…")
         process_qt_events()
 
         ui_controller = UIController()
         profiler.mark("ui_controller_created")
 
-        loading_screen.update_status("Initializing audio system...")
-        loading_screen.update_progress("Loading transcription models...")
+        loading_screen.update_status("Подготовка аудио…")
+        loading_screen.update_progress("Загрузка модели распознавания…")
         process_qt_events()
 
         local_backend = run_with_ui_pulse(load_local_whisper_backend)
@@ -248,7 +320,7 @@ def main() -> int:
         local_backend = app_controller.transcription_backends.get("local_whisper")
         if local_backend and hasattr(local_backend, "device_info"):
             device_info = local_backend.device_info
-            loading_screen.update_progress(f"Using {device_info}")
+            loading_screen.update_progress(f"Модель готова: {device_info}")
             process_qt_events()
             logging.info(f"Whisper device: {device_info}")
 
@@ -264,6 +336,7 @@ def main() -> int:
         # Now that the main UI is available, a missing local model may request
         # download consent (never during startup, never for API-only users).
         app_controller.notify_main_ui_ready()
+        ui_controller.schedule_startup_update_check()
 
         profiler.log_summary()
         summary_logged = True
@@ -294,3 +367,4 @@ def main() -> int:
         logging.info("=" * 60)
         logging.info("Application shutdown complete")
         logging.info("=" * 60)
+        release_single_instance()

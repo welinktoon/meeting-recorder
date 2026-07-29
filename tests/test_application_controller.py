@@ -1,6 +1,7 @@
 """Controller-level tests for the extracted application controller."""
 
 import importlib
+import os
 import sys
 import tempfile
 import time
@@ -81,6 +82,9 @@ class FakeSettingsManager:
             "copy_clipboard": True,
             "auto_paste": False,
             "transcript_cleanup_enabled": False,
+            "codex_cleanup_enabled": False,
+            "codex_cleanup_mode": "correct",
+            "codex_cleanup_trigger": "manual",
         }
         self.saved_model_selection = None
         self.saved_hotkeys = None
@@ -271,10 +275,34 @@ class FakeExecutor:
 class FakeHistoryManager:
     def __init__(self):
         self.entries = []
+        self.transcript_versions = []
+        self.codex_history_versions = []
+        self.history_entry_ids = set()
+        self.recordings_folder = os.getcwd()
 
     def add_entry(self, **kwargs):
         self.entries.append(kwargs)
         return kwargs
+
+    def save_transcript_version(self, audio_path, text, model="", variant=""):
+        self.transcript_versions.append((audio_path, text, model, variant))
+        return audio_path + (".codex.md" if variant == "codex" else ".txt")
+
+    def get_entry_by_id(self, entry_id):
+        if entry_id in self.history_entry_ids:
+            return types.SimpleNamespace(id=entry_id)
+        return None
+
+    def save_codex_history_version(
+        self, entry_id, original_text, improved_text, model=""
+    ):
+        self.codex_history_versions.append(
+            (entry_id, original_text, improved_text, model)
+        )
+        return os.path.join(
+            self.recordings_folder,
+            f"{entry_id}.codex.md",
+        )
 
 
 class FakeAudioProcessor:
@@ -384,6 +412,7 @@ class DummyUIController:
         self.download_started = []
         self.download_finished = []
         self.deleted_models = []
+        self.transcription_states = []
 
     def show_hf_consent_dialog(self, model_name, policy, env_blocked=False):
         self.consent_requests.append((model_name, policy, env_blocked))
@@ -446,6 +475,9 @@ class DummyUIController:
         self.transcription_text = text
         self.transcription_raw = raw
 
+    def set_transcription_state(self, state, audio_path="", message=""):
+        self.transcription_states.append((state, audio_path, message))
+
     def set_transcription_stats(self, transcription_time, audio_duration, file_size):
         self.stats = (transcription_time, audio_duration, file_size)
 
@@ -496,6 +528,12 @@ def _install_module_stubs(settings_manager, history_manager, audio_processor, ke
         resolve_transcript_cleanup_prompt as _resolve_cleanup_prompt,
         resolve_transcript_cleanup_provider as _resolve_cleanup_provider,
         resolve_transcript_cleanup_reasoning as _resolve_cleanup_reasoning,
+        resolve_codex_cleanup_enabled as _resolve_codex_cleanup_enabled,
+        resolve_codex_cleanup_mode as _resolve_codex_cleanup_mode,
+        resolve_codex_cleanup_trigger as _resolve_codex_cleanup_trigger,
+        CodexCleanupTrigger as _RealCodexCleanupTrigger,
+        resolve_transcript_cleanup_rules as _resolve_cleanup_rules,
+        compose_transcript_cleanup_prompt as _compose_cleanup_prompt,
     )
 
     settings_module = types.ModuleType("services.settings")
@@ -523,6 +561,20 @@ def _install_module_stubs(settings_manager, history_manager, audio_processor, ke
     settings_module.resolve_transcript_cleanup_reasoning = _with_fake_settings(
         _resolve_cleanup_reasoning
     )
+    settings_module.resolve_codex_cleanup_enabled = _with_fake_settings(
+        _resolve_codex_cleanup_enabled
+    )
+    settings_module.resolve_codex_cleanup_mode = _with_fake_settings(
+        _resolve_codex_cleanup_mode
+    )
+    settings_module.resolve_codex_cleanup_trigger = _with_fake_settings(
+        _resolve_codex_cleanup_trigger
+    )
+    settings_module.CodexCleanupTrigger = _RealCodexCleanupTrigger
+    settings_module.resolve_transcript_cleanup_rules = _with_fake_settings(
+        _resolve_cleanup_rules
+    )
+    settings_module.compose_transcript_cleanup_prompt = _compose_cleanup_prompt
 
     from services.hf_access import (
         AccessDecision as _RealAccessDecision,
@@ -549,6 +601,9 @@ def _install_module_stubs(settings_manager, history_manager, audio_processor, ke
 
     history_module = types.ModuleType("services.history_manager")
     history_module.history_manager = history_manager
+    history_module.NO_SPEECH_TRANSCRIPT = (
+        "Нечего расшифровывать: в записи не обнаружена речь."
+    )
 
     audio_processor_module = types.ModuleType("services.audio_processor")
     audio_processor_module.audio_processor = audio_processor
@@ -674,7 +729,7 @@ class TestApplicationController(unittest.TestCase):
 
         self.assertFalse(controller._reload_in_flight)
         self.assertEqual(controller.ui_controller.device_infos[-1], "cpu-reloaded")
-        self.assertIn("Whisper engine ready", controller.ui_controller.statuses)
+        self.assertIn("Модель готова", controller.ui_controller.statuses)
         self.assertEqual(controller.ui_controller.engine_busy_states[-1], False)
         # Idle after reload refreshes the manager so Delete tracks the new model.
         self.assertGreaterEqual(controller.ui_controller.model_manager_refreshes, 1)
@@ -694,7 +749,7 @@ class TestApplicationController(unittest.TestCase):
         self.assertEqual(self.settings.all_settings["whisper_model"], "turbo")
         self.assertEqual(controller.ui_controller.engine_controls_refreshes, 1)
         self.assertIn(
-            "Model 'small' is unavailable — download declined",
+            "Модель «small» недоступна — загрузка отменена",
             controller.ui_controller.statuses,
         )
 
@@ -703,7 +758,7 @@ class TestApplicationController(unittest.TestCase):
         fn, args = controller.executor.submissions[-1]
         fn(*args)
         self.assertTrue(backend.is_available())
-        self.assertIn("Whisper engine ready", controller.ui_controller.statuses)
+        self.assertIn("Модель готова", controller.ui_controller.statuses)
 
     def test_declined_download_without_prior_model_keeps_selection(self):
         controller = self._create_controller()
@@ -727,7 +782,7 @@ class TestApplicationController(unittest.TestCase):
 
         self.assertEqual(len(controller.executor.submissions), 0)
         self.assertIn(
-            "Finish recording before changing the engine",
+            "Сначала остановите запись",
             controller.ui_controller.statuses,
         )
 
@@ -754,7 +809,7 @@ class TestApplicationController(unittest.TestCase):
         self.assertEqual(controller.hotkey_manager.hotkeys, updated_hotkeys)
         self.assertEqual(self.settings.saved_hotkeys, updated_hotkeys)
         self.assertEqual(controller.ui_controller.hotkeys, updated_hotkeys)
-        self.assertIn("Hotkeys updated", controller.ui_controller.statuses)
+        self.assertIn("Горячие клавиши обновлены", controller.ui_controller.statuses)
 
     def test_minimize_hotkey_toggles_tray_visibility_on_main_thread(self):
         controller = self._create_controller()
@@ -778,7 +833,7 @@ class TestApplicationController(unittest.TestCase):
 
         self.assertIsNone(controller.streaming_transcriber)
         self.assertFalse(controller._streaming_enabled)
-        self.assertIn("Streaming mode disabled", controller.ui_controller.statuses)
+        self.assertIn("Предпросмотр текста выключен", controller.ui_controller.statuses)
 
     def test_stop_recording_chooses_normal_or_split_transcription_path(self):
         controller = self._create_controller()
@@ -791,6 +846,7 @@ class TestApplicationController(unittest.TestCase):
             controller.executor.submissions[0][0].__name__, "transcribe_audio_file"
         )
 
+        controller.transcription_runtime._release_transcription_job()
         controller.executor = FakeExecutor()
         controller.current_backend = controller.transcription_backends["api_gpt4o"]
         controller.recorder.is_recording = True
@@ -806,6 +862,28 @@ class TestApplicationController(unittest.TestCase):
             controller.ui_controller.overlay.STATE_LARGE_FILE_SPLITTING,
             controller.ui_controller.overlay.shown_states,
         )
+
+    def test_duplicate_transcription_request_is_rejected_until_job_finishes(self):
+        controller = self._create_controller()
+        audio_path = Path(self.temp_dir.name) / "meeting.wav"
+        audio_path.write_bytes(b"audio")
+
+        controller.upload_audio_file(str(audio_path))
+        controller.upload_audio_file(str(audio_path))
+
+        self.assertEqual(len(controller.executor.submissions), 1)
+        self.assertIn(
+            "Расшифровка уже идёт", controller.ui_controller.statuses
+        )
+        self.assertEqual(
+            controller.ui_controller.transcription_states[-1][0],
+            "transcribing",
+        )
+
+        controller._on_transcription_complete("готово", None)
+        controller.upload_audio_file(str(audio_path))
+
+        self.assertEqual(len(controller.executor.submissions), 2)
 
     def test_transcription_complete_saves_history_and_resets_pending_state(self):
         controller = self._create_controller()
@@ -828,6 +906,41 @@ class TestApplicationController(unittest.TestCase):
         self.assertIsNone(controller._pending_audio_path)
         self.assertIsNone(controller._pending_audio_duration)
         self.assertIsNone(controller._pending_file_size)
+
+    def test_empty_transcription_creates_clear_marker_without_false_history_entry(self):
+        controller = self._create_controller()
+        controller._pending_audio_path = "silent-meeting.wav"
+        controller._pending_audio_duration = 4.0
+        controller._pending_file_size = 1024
+
+        controller._on_transcription_complete("   ", None)
+
+        self.assertEqual(self.history_manager.entries, [])
+        self.assertEqual(
+            self.history_manager.transcript_versions,
+            [
+                (
+                    "silent-meeting.wav",
+                    "Нечего расшифровывать: в записи не обнаружена речь.",
+                    "local_whisper",
+                    "",
+                )
+            ],
+        )
+        self.assertTrue(controller.ui_controller.refreshed_history)
+        self.assertEqual(
+            controller.ui_controller.transcription_states[-1],
+            ("complete", "silent-meeting.wav", ""),
+        )
+        self.assertEqual(
+            controller.ui_controller.transcription_text,
+            "Нечего расшифровывать: в записи не обнаружена речь.",
+        )
+        self.assertIn(
+            "Речь не обнаружена — создана пометка в расшифровке",
+            controller.ui_controller.statuses,
+        )
+        self.assertIsNone(controller._pending_audio_path)
 
     def test_transcription_complete_stores_raw_and_fixed_text(self):
         controller = self._create_controller()
@@ -885,6 +998,167 @@ class TestApplicationController(unittest.TestCase):
         self.assertIsNone(entry.get("raw_text"))
         self.assertIsNone(entry.get("cleanup_provider"))
         self.assertIsNone(entry.get("cleanup_model"))
+
+    def test_codex_cleanup_saves_raw_first_and_marks_enhanced_version(self):
+        controller = self._create_controller()
+        self.settings.all_settings["codex_cleanup_enabled"] = True
+        self.settings.all_settings["codex_cleanup_mode"] = "structure"
+        self.settings.all_settings["codex_cleanup_trigger"] = "automatic"
+        clip_path = str(Path(self.temp_dir.name) / "codex-clip.wav")
+        Path(clip_path).write_bytes(b"RIFF")
+        controller._pending_audio_path = clip_path
+        controller.transcription_runtime._claim_transcription_job(clip_path)
+
+        class _Backend:
+            def transcribe(self, _path):
+                return "сырой текст без знаков"
+
+        def clean(text, mode="correct", extra_prompt=""):
+            self.assertEqual(mode, "structure")
+            self.assertEqual(text, "сырой текст без знаков")
+            controller.transcription_runtime._codex_cleanup.last_error = None
+            return "Сырой текст без знаков."
+
+        controller.current_backend = _Backend()
+        controller.transcription_runtime._codex_cleanup.cleanup = clean
+        controller.transcription_runtime.transcribe_audio_file(clip_path)
+
+        self.assertEqual(
+            self.history_manager.transcript_versions[0][0],
+            clip_path,
+        )
+        self.assertEqual(
+            self.history_manager.transcript_versions[0][1],
+            "сырой текст без знаков",
+        )
+        entry = self.history_manager.entries[0]
+        self.assertEqual(entry["text"], "Сырой текст без знаков.")
+        self.assertEqual(entry["raw_text"], "сырой текст без знаков")
+        self.assertEqual(entry["cleanup_provider"], "codex")
+        self.assertEqual(entry["cleanup_model"], "structure")
+        self.assertIn(
+            "Готово — улучшено в Codex",
+            controller.ui_controller.statuses,
+        )
+
+    def test_manual_codex_improves_saved_text_without_running_whisper(self):
+        controller = self._create_controller()
+        self.settings.all_settings["codex_cleanup_enabled"] = True
+        self.settings.all_settings["codex_cleanup_mode"] = "structure"
+        self.settings.all_settings["codex_cleanup_trigger"] = "manual"
+        audio_path = str(Path(self.temp_dir.name) / "saved-meeting.wav")
+        Path(audio_path).write_bytes(b"RIFF")
+
+        controller.improve_transcript_with_codex(
+            audio_path,
+            (
+                "Источник: saved-meeting.wav\n"
+                "Модель: medium\n\n"
+                "сырой текст встречи"
+            ),
+        )
+
+        self.assertEqual(len(controller.executor.submissions), 1)
+        worker, args = controller.executor.submissions[0]
+        self.assertEqual(
+            worker.__name__,
+            "_improve_existing_transcript_worker",
+        )
+        self.assertEqual(args[0], audio_path)
+        self.assertEqual(args[1], "сырой текст встречи")
+        self.assertEqual(args[2], "structure")
+
+        def clean(text, mode="correct", extra_prompt=""):
+            controller.transcription_runtime._codex_cleanup.last_error = None
+            return "Структурированный текст встречи."
+
+        controller.transcription_runtime._codex_cleanup.cleanup = clean
+        worker(*args)
+
+        self.assertEqual(
+            self.history_manager.transcript_versions[-1],
+            (
+                audio_path,
+                "Структурированный текст встречи.",
+                "structure",
+                "codex",
+            ),
+        )
+        self.assertEqual(
+            controller.ui_controller.transcription_text,
+            "Структурированный текст встречи.",
+        )
+        self.assertIn(
+            "Готово — создана улучшенная версия Codex",
+            controller.ui_controller.statuses,
+        )
+
+    def test_manual_codex_improves_database_only_entry_without_audio(self):
+        controller = self._create_controller()
+        self.settings.all_settings["codex_cleanup_enabled"] = True
+        self.settings.all_settings["codex_cleanup_mode"] = "structure"
+        entry_id = "database-only-entry"
+        self.history_manager.history_entry_ids.add(entry_id)
+
+        controller.improve_transcript_with_codex(
+            "",
+            "сырой текст старой встречи",
+            entry_id,
+        )
+
+        self.assertEqual(len(controller.executor.submissions), 1)
+        worker, args = controller.executor.submissions[0]
+
+        def clean(text, mode="correct", extra_prompt=""):
+            controller.transcription_runtime._codex_cleanup.last_error = None
+            return "Улучшенный текст старой встречи."
+
+        controller.transcription_runtime._codex_cleanup.cleanup = clean
+        worker(*args)
+
+        self.assertEqual(
+            self.history_manager.codex_history_versions,
+            [(
+                entry_id,
+                "сырой текст старой встречи",
+                "Улучшенный текст старой встречи.",
+                "structure",
+            )],
+        )
+        self.assertEqual(
+            controller.ui_controller.transcription_text,
+            "Улучшенный текст старой встречи.",
+        )
+
+    def test_codex_failure_falls_back_to_raw_transcript(self):
+        controller = self._create_controller()
+        self.settings.all_settings["codex_cleanup_enabled"] = True
+        self.settings.all_settings["codex_cleanup_trigger"] = "automatic"
+        clip_path = str(Path(self.temp_dir.name) / "codex-fallback.wav")
+        Path(clip_path).write_bytes(b"RIFF")
+        controller._pending_audio_path = clip_path
+        controller.transcription_runtime._claim_transcription_job(clip_path)
+
+        class _Backend:
+            def transcribe(self, _path):
+                return "исходный текст"
+
+        def fail(text, mode="correct", extra_prompt=""):
+            controller.transcription_runtime._codex_cleanup.last_error = "not logged in"
+            return text
+
+        controller.current_backend = _Backend()
+        controller.transcription_runtime._codex_cleanup.cleanup = fail
+        controller.transcription_runtime.transcribe_audio_file(clip_path)
+
+        entry = self.history_manager.entries[0]
+        self.assertEqual(entry["text"], "исходный текст")
+        self.assertIsNone(entry["raw_text"])
+        self.assertIsNone(entry["cleanup_provider"])
+        self.assertIn(
+            "Codex недоступен — сохранён исходный текст",
+            controller.ui_controller.statuses,
+        )
 
     def test_transcribe_clip_delegates_to_current_backend(self):
         controller = self._create_controller()
@@ -1013,7 +1287,7 @@ class TestApplicationController(unittest.TestCase):
 
         self.assertTrue(backend.is_available())
         self.assertEqual(controller.ui_controller.device_infos[-1], "cpu-reloaded")
-        self.assertIn("Whisper engine ready", controller.ui_controller.statuses)
+        self.assertIn("Модель готова", controller.ui_controller.statuses)
 
     def test_manager_delete_refuses_loaded_model(self):
         controller = self._create_controller()
@@ -1024,7 +1298,7 @@ class TestApplicationController(unittest.TestCase):
 
         self.assertEqual(
             controller.ui_controller.deleted_models,
-            [("base", False, "Model is in use — switch models first")],
+            [("base", False, "Модель используется — сначала выберите другую")],
         )
         self.assertEqual(len(controller.executor.submissions), 0)
 
@@ -1062,7 +1336,7 @@ class TestApplicationController(unittest.TestCase):
 
         self.assertEqual(
             controller.ui_controller.deleted_models,
-            [("tiny", False, "Files are in use by another process")],
+            [("tiny", False, "Файлы используются другим процессом")],
         )
 
 

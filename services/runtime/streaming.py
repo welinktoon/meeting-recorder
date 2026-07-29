@@ -55,7 +55,7 @@ class StreamingRuntime:
         if self.controller.recorder.is_recording:
             logger.warning("Cannot reconfigure streaming while recording")
             self.controller.ui_controller.set_status(
-                "Stop recording before changing streaming mode"
+                "Сначала остановите запись"
             )
             return
 
@@ -145,7 +145,9 @@ class StreamingRuntime:
                     f"Streaming transcription enabled (chunk_duration={chunk_duration}s)"
                 )
                 if not initial_setup:
-                    self.controller.ui_controller.set_status("Streaming mode enabled")
+                    self.controller.ui_controller.set_status(
+                        "Предпросмотр текста включён"
+                    )
             else:
                 if self.controller._streaming_enabled:
                     logger.info(
@@ -154,19 +156,23 @@ class StreamingRuntime:
                     )
                     if not initial_setup:
                         self.controller.ui_controller.set_status(
-                            "Streaming requires Local Whisper backend"
+                            "Предпросмотр доступен только для локальной модели"
                         )
                 else:
                     logger.info("Streaming transcription disabled")
                     if not initial_setup:
-                        self.controller.ui_controller.set_status("Streaming mode disabled")
+                        self.controller.ui_controller.set_status(
+                            "Предпросмотр текста выключен"
+                        )
 
                 self.controller._streaming_enabled = False
         except Exception as exc:
             logger.error(f"Failed to setup streaming: {exc}")
             self.controller._streaming_enabled = False
             if not initial_setup:
-                self.controller.ui_controller.set_status("Failed to reconfigure streaming")
+                self.controller.ui_controller.set_status(
+                    "Не удалось изменить предпросмотр"
+                )
 
     def _warmup_streaming_backend(self, backend) -> None:
         """Run a short silent inference so the first live preview is not a cold start.

@@ -8,17 +8,19 @@ import tempfile
 import threading
 from typing import Optional, Callable
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
+    QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QTabWidget,
     QWidget, QLabel, QCheckBox,
     QSlider, QFrame, QScrollArea, QTextEdit,
-    QLineEdit, QListWidget,
+    QLineEdit, QListWidget, QFileDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from config import config
 from services.settings import (
+    CodexCleanupTrigger,
     HuggingFaceAccessPolicy,
+    OverlayBadge,
     RecordingRetentionMode,
     SettingsKey,
     TranscriptCleanupModelSort,
@@ -26,6 +28,10 @@ from services.settings import (
     TranscriptCleanupReasoning,
     default_transcript_cleanup_model,
     resolve_max_saved_recordings,
+    resolve_overlay_state_visibility,
+    resolve_codex_cleanup_enabled,
+    resolve_codex_cleanup_mode,
+    resolve_codex_cleanup_trigger,
     resolve_streaming_overlay_font_size,
     resolve_transcript_cleanup_model,
     resolve_transcript_cleanup_model_sort,
@@ -35,6 +41,11 @@ from services.settings import (
     resolve_transcript_cleanup_rules,
     settings_manager,
 )
+from services.codex_cleanup import (
+    CodexCleanupMode,
+    get_codex_status,
+    start_codex_setup,
+)
 from services.history_manager import history_manager
 from services.recorder import AudioRecorder
 from ui_qt.dialogs.cleanup_prompt_dialog import CleanupPromptDialog
@@ -42,6 +53,7 @@ from ui_qt.dialogs.cleanup_rule_dialog import CleanupRuleDialog
 from ui_qt.widgets import (
     NoWheelComboBox, NoWheelSpinBox, PrimaryButton, Button, SearchableComboBox,
 )
+from version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +62,8 @@ class SettingsDialog(QDialog):
     """Settings dialog with tabbed interface."""
 
     settings_changed = pyqtSignal(dict)
+    close_requested = pyqtSignal()
+    check_updates_requested = pyqtSignal()
 
     #: Internal: emitted from the model-list worker thread
     #: (provider, sort, models, error).
@@ -61,13 +75,16 @@ class SettingsDialog(QDialog):
 
     #: Internal: emitted from the rule-dictation worker thread (text, error).
     _rule_dictation_finished = pyqtSignal(str, str)
+    _codex_status_loaded = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         """Initialize settings dialog."""
         super().__init__(parent)
-        self.setWindowTitle("Settings")
+        self.setWindowTitle("Настройки")
         self.setMinimumSize(600, 500)
         self.setMaximumWidth(800)
+        self.resize(760, 700)
+        self._embedded_mode = False
 
         # Callbacks
         self.on_settings_save: Optional[Callable] = None
@@ -96,13 +113,96 @@ class SettingsDialog(QDialog):
         self._active_cleanup_provider: str = ""
 
         self._setup_ui()
+        self._localize_russian()
         self._load_settings()
 
         self._cleanup_models_loaded.connect(self._on_cleanup_models_loaded)
         self._cleanup_rule_polished.connect(self._on_cleanup_rule_polished)
         self._rule_dictation_finished.connect(self._on_rule_dictation_finished)
+        self._codex_status_loaded.connect(self._apply_codex_status)
         self.finished.connect(self._release_rule_recorder)
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        QTimer.singleShot(0, self._refresh_codex_status)
+
+    def _localize_russian(self):
+        """Translate the inherited OpenWhisper settings surface at one point.
+
+        Keeping the mapping here avoids changing the underlying persisted enum
+        values while making every visible label appropriate for this app.
+        """
+        self.setWindowTitle("Настройки — Запись встреч")
+        texts = {
+            "General": "Основные", "Audio": "Аудио", "Hotkeys": "Горячие клавиши",
+            "Cleanup": "Обработка текста", "Advanced": "Дополнительно",
+            "General Settings": "Основные настройки", "Audio Settings": "Настройки аудио",
+            "Auto-paste transcription to active window": "Вставлять расшифровку в активное окно",
+            "Copy transcription to clipboard": "Копировать расшифровку в буфер обмена",
+            "Minimize to system tray on close": "Сворачивать в трей при закрытии",
+            "Saved Recordings": "Хранение", "Keep recordings:": "Хранить записи:",
+            "Keep all": "Хранить все", "Custom": "Указать количество", "Number to keep:": "Количество:",
+            "Older audio files are deleted automatically when the limit is exceeded. Transcription history text is kept separately.": "При превышении лимита старые аудиофайлы удаляются. Тексты сохраняются.",
+            "Real-Time Transcription (Experimental)": "Текст во время записи",
+            "Enable real-time transcription preview (while recording)": "Показывать черновик",
+            "Preview font size:": "Размер текста предпросмотра:", "Cancel": "Отмена", "Save Settings": "Сохранить",
+            "Sample Rate (Hz):": "Частота дискретизации (Гц):", "Channels:": "Каналы:",
+            "Mono (1)": "Моно (1)", "Stereo (2)": "Стерео (2)", "Silence Threshold:": "Порог тишины:",
+            "Input Device:": "Микрофон:", "Select microphone for recording": "Выберите микрофон для записи",
+            "System Default": "Системный по умолчанию", "Configure global hotkeys for quick access": "Настройте глобальные горячие клавиши для быстрого доступа",
+            "Configure Hotkeys...": "Настроить горячие клавиши…", "AI Transcript Cleanup": "Обработка расшифровки ИИ",
+            "Clean up transcript with AI after transcription": "Улучшать текст с помощью ИИ после расшифровки",
+            "Provider:": "Провайдер:", "Model:": "Модель:", "Refresh": "Обновить",
+            "Thinking level:": "Уровень рассуждений:", "Off": "Выключено", "Low": "Низкий", "Medium": "Средний", "High": "Высокий",
+            "Learned Rules": "Правила обработки", "Hotkeys": "Горячие клавиши",
+            "Shows transcribed text as you speak on the near-cursor overlay using a dedicated tiny.en preview model. Requires Local Whisper backend. Final transcription still uses your selected model and normal auto-paste / clipboard settings.": "Показывает черновой текст во время записи.",
+            "Sort models by:": "Сортировка моделей:", "A → Z": "По алфавиту",
+            "Most popular": "Сначала популярные", "Top this week": "Популярные за неделю",
+            "Newest": "Сначала новые", "Cheapest first": "Сначала дешёвые",
+            "Priciest first": "Сначала дорогие", "Largest context": "Самый большой контекст",
+            "Highest throughput": "Самые быстрые", "Lowest latency": "Минимальная задержка",
+            "How the model dropdown is ordered (OpenRouter server-side ranking)": "Порядок моделей в списке OpenRouter",
+            "Reload the model list from the provider's API": "Обновить список моделей у провайдера",
+            "Requests extra thinking effort from reasoning models (e.g. o4-mini). Leave Off for regular chat models.": "Для обычных моделей оставьте выключенным.",
+            "Cleanup prompt:": "Инструкция обработки:",
+            "Instructions for how the AI should clean up transcripts…": "Укажите, как ИИ должен улучшать расшифровки…",
+            "Open editor…": "Открыть редактор…", "Reset to default": "Сбросить",
+            "Runs the selected chat model on each transcript after transcription. OpenAI needs OPENAI_API_KEY; OpenRouter needs OPENROUTER_API_KEY (environment or .env). Edit the prompt to change cleanup style (e.g. bullets, email tone).": "Для облачной обработки нужен API-ключ провайдера.",
+            "Teach the cleanup AI new behaviors — how to spell names, expand acronyms, or format text. Rules are added to the cleanup prompt on every transcript.": "Правила применяются к каждой расшифровке.",
+            "e.g. Always spell my name \"Alex Rivera\"": "Например: всегда писать моё имя «Алексей»",
+            "Dictate": "Продиктовать", "Speak the instruction instead of typing it": "Продиктуйте правило вместо ввода",
+            "Add Rule": "Добавить правило", "Learned rules:": "Сохранённые правила:",
+            "Edit…": "Изменить…", "Advanced Settings": "Дополнительные настройки",
+            "Maximum File Size (MB):": "Максимальный размер файла (МБ):",
+            "Enable detailed logging": "Включить подробный журнал",
+            "Hugging Face Downloads": "Загрузка моделей Hugging Face",
+            "When a model is missing from this computer:": "Если модели нет на компьютере:",
+            "Ask before downloading": "Спрашивать перед загрузкой",
+            "Always allow downloads": "Всегда разрешать загрузку",
+            "Never connect (fully offline)": "Никогда не подключаться к сети",
+            "Models already on this computer always load locally without any network checks. Hugging Face is only contacted to download a missing model, and only when this policy (or a one-time approval) allows it. An external HF_HUB_OFFLINE=1 environment variable disables downloads entirely.": "Сеть используется только для загрузки отсутствующей модели.",
+        }
+        for widget in self.findChildren(QWidget):
+            if hasattr(widget, "text") and hasattr(widget, "setText"):
+                value = widget.text()
+                if value in texts:
+                    widget.setText(texts[value])
+            if hasattr(widget, "toolTip") and hasattr(widget, "setToolTip"):
+                value = widget.toolTip()
+                if value in texts:
+                    widget.setToolTip(texts[value])
+            if hasattr(widget, "placeholderText") and hasattr(widget, "setPlaceholderText"):
+                value = widget.placeholderText()
+                if value in texts:
+                    widget.setPlaceholderText(texts[value])
+            if isinstance(widget, NoWheelComboBox):
+                for index in range(widget.count()):
+                    value = widget.itemText(index)
+                    if value in texts:
+                        widget.setItemText(index, texts[value])
+        for tab_widget in self.findChildren(QTabWidget):
+            for index in range(tab_widget.count()):
+                value = tab_widget.tabText(index)
+                if value in texts:
+                    tab_widget.setTabText(index, texts[value])
 
     def _setup_ui(self):
         """Setup the user interface."""
@@ -110,113 +210,176 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Tab widget: segmented-button tab styling lives in theme.qss
+        # Segmented-button styling lives in the shared light/dark themes
         # under the #settingsTabs rules.
         self.tabs = QTabWidget()
         self.tabs.setObjectName("settingsTabs")
         self.tabs.tabBar().setCursor(Qt.CursorShape.PointingHandCursor)
 
-        # Create tabs
-        self._create_general_tab()
-        self._create_audio_tab()
-        self._create_hotkeys_tab()
+        # Keep each page focused on one user task.
+        self._create_recording_tab()
+        self._create_transcription_tab()
         self._create_cleanup_tab()
-        self._create_advanced_tab()
+        self._create_application_tab()
 
         layout.addWidget(self.tabs)
 
         # Button layout
         button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(16, 16, 16, 16)
-        button_layout.setSpacing(8)
+        button_layout.setContentsMargins(24, 18, 24, 18)
+        button_layout.setSpacing(10)
 
         button_layout.addStretch()
 
-        cancel_btn = Button("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(cancel_btn)
+        self.cancel_btn = Button("Cancel")
+        self.cancel_btn.clicked.connect(self._cancel_or_close)
+        button_layout.addWidget(self.cancel_btn)
 
-        save_btn = PrimaryButton("Save Settings")
-        save_btn.clicked.connect(self._save_settings)
-        button_layout.addWidget(save_btn)
+        self.save_btn = PrimaryButton("Save Settings")
+        self.save_btn.clicked.connect(self._save_settings)
+        button_layout.addWidget(self.save_btn)
 
         layout.addLayout(button_layout)
 
-    def _create_general_tab(self):
-        """Create general settings tab."""
+    def set_embedded_mode(self, enabled: bool = True):
+        """Display settings as a page inside the main workspace."""
+        self._embedded_mode = enabled
+        if enabled:
+            self.setWindowFlags(Qt.WindowType.Widget)
+            self.setModal(False)
+            self.setMinimumSize(0, 0)
+            self.setMaximumWidth(16_777_215)
+
+    def _cancel_or_close(self):
+        if self._embedded_mode:
+            self._load_settings()
+            self.close_requested.emit()
+            return
+        self.reject()
+
+    def _scrollable_tab(self):
+        """Create a consistent scrollable settings page."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(30, 28, 30, 30)
+        layout.setSpacing(18)
 
-        # Title
-        title = QLabel("General Settings")
-        title.setObjectName("headerLabel")
-        layout.addWidget(title)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        scroll_area.setWidget(tab)
+        return scroll_area, layout
 
-        # Auto-paste checkbox
-        layout.addSpacing(12)
-        self.auto_paste_check = QCheckBox("Auto-paste transcription to active window")
+    @staticmethod
+    def _section_label(text):
+        label = QLabel(text)
+        label.setObjectName("sectionLabel")
+        return label
+
+    def _create_recording_tab(self):
+        """Group microphone and meeting-video controls together."""
+        scroll_area, layout = self._scrollable_tab()
+
+        layout.addWidget(self._section_label("Микрофон"))
+        layout.addWidget(QLabel("Устройство записи"))
+        self.audio_device_combo = NoWheelComboBox()
+        self.audio_device_combo.setMinimumHeight(36)
+        self._populate_audio_devices()
+        layout.addWidget(self.audio_device_combo)
+
+        format_row = QHBoxLayout()
+        format_row.setSpacing(12)
+        sample_column = QVBoxLayout()
+        sample_column.setSpacing(8)
+        sample_column.addWidget(QLabel("Частота, Гц"))
+        self.sample_rate_combo = NoWheelComboBox()
+        self.sample_rate_combo.addItems(["16000", "22050", "44100", "48000"])
+        self.sample_rate_combo.setMinimumHeight(36)
+        sample_column.addWidget(self.sample_rate_combo)
+        format_row.addLayout(sample_column, stretch=1)
+
+        channels_column = QVBoxLayout()
+        channels_column.setSpacing(8)
+        channels_column.addWidget(QLabel("Каналы"))
+        self.channels_combo = NoWheelComboBox()
+        self.channels_combo.addItems(["Mono (1)", "Stereo (2)"])
+        self.channels_combo.setMinimumHeight(36)
+        channels_column.addWidget(self.channels_combo)
+        format_row.addLayout(channels_column, stretch=1)
+        layout.addLayout(format_row)
+
+        layout.addWidget(QLabel("Порог тишины"))
+        threshold_layout = QHBoxLayout()
+        self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.threshold_slider.setRange(0, 100)
+        self.threshold_slider.setValue(10)
+        self.threshold_value_label = QLabel("0.01")
+        self.threshold_value_label.setObjectName("accentLabel")
+        self.threshold_value_label.setMaximumWidth(50)
+        self.threshold_slider.valueChanged.connect(self._update_threshold_display)
+        threshold_layout.addWidget(self.threshold_slider)
+        threshold_layout.addWidget(self.threshold_value_label)
+        layout.addLayout(threshold_layout)
+
+        layout.addSpacing(16)
+        layout.addWidget(self._section_label("Видео встречи"))
+
+        self.video_recording_enabled_check = QCheckBox(
+            "Записывать экран и звук по умолчанию"
+        )
+        layout.addWidget(self.video_recording_enabled_check)
+
+        video_fps_layout = QHBoxLayout()
+        video_fps_layout.setSpacing(8)
+        video_fps_layout.addWidget(QLabel("Частота кадров:"))
+        self.video_fps_spinbox = NoWheelSpinBox()
+        self.video_fps_spinbox.setRange(5, 30)
+        self.video_fps_spinbox.setSuffix(" FPS")
+        self.video_fps_spinbox.setMinimumHeight(36)
+        video_fps_layout.addWidget(self.video_fps_spinbox)
+        video_fps_layout.addStretch()
+        layout.addLayout(video_fps_layout)
+
+        layout.addWidget(QLabel("Качество видео:"))
+        self.video_quality_combo = NoWheelComboBox()
+        self.video_quality_combo.addItem("Экономное", 28)
+        self.video_quality_combo.addItem("Стандартное", 24)
+        self.video_quality_combo.addItem("Высокое", 20)
+        self.video_quality_combo.setMinimumHeight(36)
+        layout.addWidget(self.video_quality_combo)
+
+        video_info = QLabel(
+            "Видео сохраняется локально в MP4 рядом с записью встречи. "
+            "Более высокая частота кадров и качество увеличивают размер файла."
+        )
+        video_info.setObjectName("infoLabel")
+        video_info.setWordWrap(True)
+        layout.addWidget(video_info)
+        layout.addStretch()
+        self._recording_tab_index = self.tabs.addTab(scroll_area, "Запись")
+
+    def _create_transcription_tab(self):
+        """Group transcript delivery, preview, badges, and model access."""
+        scroll_area, layout = self._scrollable_tab()
+
+        layout.addWidget(self._section_label("После расшифровки"))
+        self.auto_paste_check = QCheckBox(
+            "Вставлять расшифровку в активное окно"
+        )
         layout.addWidget(self.auto_paste_check)
-
-        # Copy to clipboard checkbox
-        self.copy_clipboard_check = QCheckBox("Copy transcription to clipboard")
+        self.copy_clipboard_check = QCheckBox(
+            "Копировать расшифровку в буфер обмена"
+        )
         layout.addWidget(self.copy_clipboard_check)
 
-        # Minimize to tray checkbox
-        layout.addSpacing(12)
-        self.minimize_tray_check = QCheckBox("Minimize to system tray on close")
-        layout.addWidget(self.minimize_tray_check)
-
-        # Saved recordings retention
-        layout.addSpacing(24)
-        recordings_label = QLabel("Saved Recordings")
-        recordings_label.setObjectName("sectionLabel")
-        layout.addWidget(recordings_label)
-
-        layout.addSpacing(8)
-        retention_label = QLabel("Keep recordings:")
-        layout.addWidget(retention_label)
-
-        self.recording_retention_combo = NoWheelComboBox()
-        self.recording_retention_combo.addItem("Keep all", RecordingRetentionMode.KEEP_ALL)
-        self.recording_retention_combo.addItem("Custom", RecordingRetentionMode.CUSTOM)
-        self.recording_retention_combo.setMinimumHeight(36)
-        self.recording_retention_combo.currentIndexChanged.connect(
-            self._update_recording_retention_ui
+        layout.addSpacing(16)
+        layout.addWidget(self._section_label("Текст во время записи"))
+        self.streaming_enabled_check = QCheckBox(
+            "Показывать черновик распознавания рядом с курсором"
         )
-        layout.addWidget(self.recording_retention_combo)
-
-        custom_count_layout = QHBoxLayout()
-        custom_count_layout.setSpacing(8)
-        self.max_recordings_label = QLabel("Number to keep:")
-        custom_count_layout.addWidget(self.max_recordings_label)
-
-        self.max_recordings_spinbox = NoWheelSpinBox()
-        self.max_recordings_spinbox.setMinimum(1)
-        self.max_recordings_spinbox.setMaximum(1000)
-        self.max_recordings_spinbox.setValue(config.MAX_SAVED_RECORDINGS)
-        self.max_recordings_spinbox.setMinimumHeight(36)
-        custom_count_layout.addWidget(self.max_recordings_spinbox)
-        custom_count_layout.addStretch()
-        layout.addLayout(custom_count_layout)
-
-        retention_info = QLabel(
-            "Older audio files are deleted automatically when the limit is exceeded. "
-            "Transcription history text is kept separately."
-        )
-        retention_info.setObjectName("infoLabel")
-        retention_info.setWordWrap(True)
-        layout.addWidget(retention_info)
-
-        # Streaming transcription checkbox
-        layout.addSpacing(24)
-        streaming_label = QLabel("Real-Time Transcription (Experimental)")
-        streaming_label.setObjectName("sectionLabel")
-        layout.addWidget(streaming_label)
-
-        layout.addSpacing(8)
-        self.streaming_enabled_check = QCheckBox("Enable real-time transcription preview (while recording)")
         self.streaming_enabled_check.toggled.connect(self._update_streaming_font_ui)
         layout.addWidget(self.streaming_enabled_check)
 
@@ -235,11 +398,9 @@ class SettingsDialog(QDialog):
         font_size_layout.addStretch()
         layout.addLayout(font_size_layout)
 
-        # Info label for streaming
         streaming_info = QLabel(
-            "Shows transcribed text as you speak on the near-cursor overlay using a dedicated "
-            "tiny.en preview model. Requires Local Whisper backend. Final transcription still "
-            "uses your selected model and normal auto-paste / clipboard settings."
+            "Черновик работает с локальной моделью tiny.en. Итоговая "
+            "расшифровка всё равно выполняется выбранной основной моделью."
         )
         streaming_info.setObjectName("infoLabel")
         streaming_info.setWordWrap(True)
@@ -247,104 +408,165 @@ class SettingsDialog(QDialog):
 
         self._update_streaming_font_ui()
 
-        layout.addStretch()
-        self.tabs.addTab(tab, "General")
-
-    def _create_audio_tab(self):
-        """Create audio settings tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-
-        # Title
-        title = QLabel("Audio Settings")
-        title.setObjectName("headerLabel")
-        layout.addWidget(title)
-
-        # Sample rate
-        layout.addSpacing(12)
-        sample_rate_label = QLabel("Sample Rate (Hz):")
-        layout.addWidget(sample_rate_label)
-
-        self.sample_rate_combo = NoWheelComboBox()
-        self.sample_rate_combo.addItems(["16000", "22050", "44100", "48000"])
-        self.sample_rate_combo.setMinimumHeight(36)
-        layout.addWidget(self.sample_rate_combo)
-
-        # Channels
-        layout.addSpacing(12)
-        channels_label = QLabel("Channels:")
-        layout.addWidget(channels_label)
-
-        self.channels_combo = NoWheelComboBox()
-        self.channels_combo.addItems(["Mono (1)", "Stereo (2)"])
-        self.channels_combo.setMinimumHeight(36)
-        layout.addWidget(self.channels_combo)
-
-        # Silence threshold
-        layout.addSpacing(12)
-        threshold_label = QLabel("Silence Threshold:")
-        layout.addWidget(threshold_label)
-
-        threshold_layout = QHBoxLayout()
-        self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.threshold_slider.setMinimum(0)
-        self.threshold_slider.setMaximum(100)
-        self.threshold_slider.setValue(10)
-
-        self.threshold_value_label = QLabel("0.01")
-        self.threshold_value_label.setObjectName("accentLabel")
-        self.threshold_value_label.setMaximumWidth(50)
-
-        self.threshold_slider.valueChanged.connect(self._update_threshold_display)
-
-        threshold_layout.addWidget(self.threshold_slider)
-        threshold_layout.addWidget(self.threshold_value_label)
-        layout.addLayout(threshold_layout)
-
-        # Input device selection
         layout.addSpacing(16)
-        device_label = QLabel("Input Device:")
-        layout.addWidget(device_label)
+        layout.addWidget(self._section_label("Плавающие статусы"))
 
-        self.audio_device_combo = NoWheelComboBox()
-        self.audio_device_combo.setMinimumHeight(36)
-        self._populate_audio_devices()
-        layout.addWidget(self.audio_device_combo)
+        overlay_info = QLabel(
+            "Выберите, какие статусы показывать. Все плашки отображаются "
+            "в одном стиле в нижнем правом углу экрана."
+        )
+        overlay_info.setObjectName("infoLabel")
+        overlay_info.setWordWrap(True)
+        layout.addWidget(overlay_info)
 
-        device_info = QLabel("Select microphone for recording")
-        device_info.setObjectName("infoLabel")
-        layout.addWidget(device_info)
-
-        layout.addStretch()
-        self.tabs.addTab(tab, "Audio")
-
-    def _create_hotkeys_tab(self):
-        """Create hotkeys settings tab."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-
-        # Title
-        title = QLabel("Hotkeys")
-        title.setObjectName("headerLabel")
-        layout.addWidget(title)
-
-        layout.addSpacing(12)
-        info_label = QLabel("Configure global hotkeys for quick access")
-        info_label.setObjectName("infoLabel")
-        layout.addWidget(info_label)
+        overlay_labels = (
+            (OverlayBadge.RECORDING, "Запись"),
+            (OverlayBadge.STREAMING, "Текст во время записи"),
+            (OverlayBadge.PROCESSING, "Подготовка записи"),
+            (OverlayBadge.TRANSCRIBING, "Расшифровка"),
+            (OverlayBadge.CLEANING, "Правка текста"),
+            (OverlayBadge.CANCELING, "Отмена операции"),
+            (OverlayBadge.STT_ENABLE, "Распознавание включено"),
+            (OverlayBadge.STT_DISABLE, "Распознавание выключено"),
+            (OverlayBadge.COPIED, "Скопировано"),
+            (OverlayBadge.LARGE_FILE_SPLITTING, "Подготовка большого файла"),
+            (OverlayBadge.LARGE_FILE_PROCESSING, "Обработка большого файла"),
+        )
+        self.overlay_state_checks = {}
+        overlay_grid = QGridLayout()
+        overlay_grid.setHorizontalSpacing(24)
+        overlay_grid.setVerticalSpacing(10)
+        for index, (state, label) in enumerate(overlay_labels):
+            checkbox = QCheckBox(label)
+            self.overlay_state_checks[state] = checkbox
+            overlay_grid.addWidget(checkbox, index // 2, index % 2)
+        layout.addLayout(overlay_grid)
 
         layout.addSpacing(16)
-        hotkey_button = PrimaryButton("Configure Hotkeys...")
+        layout.addWidget(self._section_label("Загрузка локальных моделей"))
+        layout.addWidget(QLabel("Если нужной модели ещё нет на компьютере"))
+        self.hf_policy_combo = NoWheelComboBox()
+        self.hf_policy_combo.setObjectName("hfPolicyCombo")
+        self.hf_policy_combo.addItem(
+            "Спрашивать перед загрузкой",
+            HuggingFaceAccessPolicy.ASK,
+        )
+        self.hf_policy_combo.addItem(
+            "Загружать автоматически",
+            HuggingFaceAccessPolicy.ALWAYS,
+        )
+        self.hf_policy_combo.addItem(
+            "Не подключаться к Hugging Face",
+            HuggingFaceAccessPolicy.NEVER,
+        )
+        self.hf_policy_combo.setMinimumHeight(36)
+        layout.addWidget(self.hf_policy_combo)
+        hf_info = QLabel(
+            "Уже установленные модели всегда работают локально. "
+            "Интернет используется только для загрузки отсутствующей модели."
+        )
+        hf_info.setObjectName("infoLabel")
+        hf_info.setWordWrap(True)
+        layout.addWidget(hf_info)
+        layout.addStretch()
+        self._transcription_tab_index = self.tabs.addTab(
+            scroll_area,
+            "Расшифровка",
+        )
+        # Backward-compatible destination used by the download consent flow.
+        self._advanced_tab_index = self._transcription_tab_index
+
+    def _create_application_tab(self):
+        """Group app behavior, storage, shortcuts, and updates."""
+        scroll_area, layout = self._scrollable_tab()
+
+        layout.addWidget(self._section_label("Поведение приложения"))
+        self.minimize_tray_check = QCheckBox(
+            "Сворачивать в трей при закрытии окна"
+        )
+        layout.addWidget(self.minimize_tray_check)
+
+        layout.addSpacing(16)
+        layout.addWidget(self._section_label("Хранение записей"))
+        layout.addWidget(QLabel("Хранить записи"))
+        self.recording_retention_combo = NoWheelComboBox()
+        self.recording_retention_combo.addItem(
+            "Хранить все",
+            RecordingRetentionMode.KEEP_ALL,
+        )
+        self.recording_retention_combo.addItem(
+            "Указать количество",
+            RecordingRetentionMode.CUSTOM,
+        )
+        self.recording_retention_combo.setMinimumHeight(36)
+        self.recording_retention_combo.currentIndexChanged.connect(
+            self._update_recording_retention_ui
+        )
+        layout.addWidget(self.recording_retention_combo)
+
+        custom_count_layout = QHBoxLayout()
+        custom_count_layout.setSpacing(8)
+        self.max_recordings_label = QLabel("Количество:")
+        custom_count_layout.addWidget(self.max_recordings_label)
+        self.max_recordings_spinbox = NoWheelSpinBox()
+        self.max_recordings_spinbox.setRange(1, 1000)
+        self.max_recordings_spinbox.setValue(config.MAX_SAVED_RECORDINGS)
+        self.max_recordings_spinbox.setMinimumHeight(36)
+        custom_count_layout.addWidget(self.max_recordings_spinbox)
+        custom_count_layout.addStretch()
+        layout.addLayout(custom_count_layout)
+
+        retention_info = QLabel(
+            "При превышении лимита удаляются старые аудио- и видеофайлы. "
+            "Тексты расшифровок сохраняются."
+        )
+        retention_info.setObjectName("infoLabel")
+        retention_info.setWordWrap(True)
+        layout.addWidget(retention_info)
+
+        layout.addWidget(QLabel("Папка для записей"))
+        folder_row = QHBoxLayout()
+        folder_row.setSpacing(10)
+        self.recordings_folder_edit = QLineEdit()
+        self.recordings_folder_edit.setReadOnly(True)
+        self.recordings_folder_edit.setMinimumHeight(36)
+        folder_row.addWidget(self.recordings_folder_edit, stretch=1)
+        folder_button = Button("Выбрать…")
+        folder_button.clicked.connect(self._choose_recordings_folder)
+        folder_row.addWidget(folder_button)
+        layout.addLayout(folder_row)
+
+        layout.addSpacing(16)
+        layout.addWidget(self._section_label("Управление"))
+        hotkey_button = Button("Настроить горячие клавиши…")
         hotkey_button.setMinimumHeight(40)
         hotkey_button.clicked.connect(self._open_hotkey_dialog)
         layout.addWidget(hotkey_button)
 
+        layout.addSpacing(16)
+        layout.addWidget(self._section_label("Обновления"))
+        self.update_version_label = QLabel(
+            f"Текущая версия: {__version__}"
+        )
+        layout.addWidget(self.update_version_label)
+        self.update_status_label = QLabel(
+            "Обновления проверяются автоматически при запуске."
+        )
+        self.update_status_label.setObjectName("infoLabel")
+        self.update_status_label.setWordWrap(True)
+        layout.addWidget(self.update_status_label)
+        self.check_updates_button = Button("Проверить обновления")
+        self.check_updates_button.setMinimumHeight(40)
+        self.check_updates_button.clicked.connect(
+            self.check_updates_requested.emit
+        )
+        layout.addWidget(self.check_updates_button)
+
         layout.addStretch()
-        self.tabs.addTab(tab, "Hotkeys")
+        self._application_tab_index = self.tabs.addTab(
+            scroll_area,
+            "Приложение",
+        )
 
     def _create_cleanup_tab(self):
         """Create AI transcript cleanup (post-processing) settings tab.
@@ -379,8 +601,8 @@ class SettingsDialog(QDialog):
 
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(30, 28, 30, 30)
+        layout.setSpacing(18)
 
         scroll_area.setWidget(content)
         return scroll_area, layout
@@ -389,14 +611,58 @@ class SettingsDialog(QDialog):
         """Build the General cleanup subtab (provider, model, prompt)."""
         scroll_area, layout = self._cleanup_subtab_scaffold()
 
-        # Title
-        title = QLabel("AI Transcript Cleanup")
-        title.setObjectName("headerLabel")
-        layout.addWidget(title)
+        self.codex_cleanup_check = QCheckBox(
+            "Улучшать расшифровку через Codex"
+        )
+        self.codex_cleanup_check.toggled.connect(self._update_codex_cleanup_ui)
+        layout.addWidget(self.codex_cleanup_check)
 
-        layout.addSpacing(12)
+        self.codex_mode_label = QLabel("Режим:")
+        layout.addWidget(self.codex_mode_label)
+        self.codex_mode_combo = NoWheelComboBox()
+        for value in CodexCleanupMode.ALL:
+            self.codex_mode_combo.addItem(CodexCleanupMode.LABELS[value], value)
+        self.codex_mode_combo.setMinimumHeight(36)
+        layout.addWidget(self.codex_mode_combo)
+
+        self.codex_trigger_label = QLabel("Когда запускать Codex:")
+        layout.addWidget(self.codex_trigger_label)
+        self.codex_trigger_combo = NoWheelComboBox()
+        self.codex_trigger_combo.addItem(
+            "Вручную — кнопкой у выбранной встречи",
+            CodexCleanupTrigger.MANUAL,
+        )
+        self.codex_trigger_combo.addItem(
+            "Автоматически — после каждой расшифровки",
+            CodexCleanupTrigger.AUTOMATIC,
+        )
+        self.codex_trigger_combo.setMinimumHeight(36)
+        layout.addWidget(self.codex_trigger_combo)
+
+        codex_connection_row = QHBoxLayout()
+        codex_connection_row.setSpacing(10)
+        self.codex_status_label = QLabel("Проверяем Codex…")
+        self.codex_status_label.setObjectName("infoLabel")
+        codex_connection_row.addWidget(self.codex_status_label, stretch=1)
+        self.codex_connect_btn = Button("Подключить Codex")
+        self.codex_connect_btn.clicked.connect(self._connect_codex)
+        codex_connection_row.addWidget(self.codex_connect_btn)
+        layout.addLayout(codex_connection_row)
+
+        self.codex_info_label = QLabel(
+            "Исходный текст сохранится отдельно. Версия Codex будет открываться первой."
+        )
+        self.codex_info_label.setObjectName("infoLabel")
+        self.codex_info_label.setWordWrap(True)
+        layout.addWidget(self.codex_info_label)
+
+        codex_divider = QFrame()
+        codex_divider.setFrameShape(QFrame.Shape.HLine)
+        codex_divider.setObjectName("separator")
+        layout.addWidget(codex_divider)
+
         self.transcript_cleanup_check = QCheckBox(
-            "Clean up transcript with AI after transcription"
+            "Использовать другой облачный провайдер"
         )
         self.transcript_cleanup_check.toggled.connect(self._update_cleanup_prompt_ui)
         layout.addWidget(self.transcript_cleanup_check)
@@ -552,14 +818,59 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return scroll_area
 
+    def _update_codex_cleanup_ui(self):
+        enabled = self.codex_cleanup_check.isChecked()
+        self.codex_mode_label.setEnabled(enabled)
+        self.codex_mode_combo.setEnabled(enabled)
+        self.codex_trigger_label.setEnabled(enabled)
+        self.codex_trigger_combo.setEnabled(enabled)
+        if hasattr(self, "transcript_cleanup_check"):
+            self._update_cleanup_prompt_ui()
+
+    def _refresh_codex_status(self):
+        self.codex_connect_btn.setEnabled(False)
+        self.codex_status_label.setText("Проверяем Codex…")
+
+        def worker():
+            status = get_codex_status()
+            self._codex_status_loaded.emit(status.state, status.message)
+
+        threading.Thread(
+            target=worker,
+            name="codex-status",
+            daemon=True,
+        ).start()
+
+    def _apply_codex_status(self, state: str, message: str):
+        ready = state == "ready"
+        self.codex_status_label.setText(
+            "● Codex подключён" if ready else message
+        )
+        self.codex_connect_btn.setText(
+            "Проверить" if ready else "Подключить Codex"
+        )
+        self.codex_connect_btn.setEnabled(True)
+
+    def _connect_codex(self):
+        try:
+            status = get_codex_status()
+            if status.ready:
+                self._refresh_codex_status()
+                return
+            start_codex_setup()
+            self.codex_status_label.setText(
+                "Завершите установку или вход в открывшемся окне"
+            )
+            QTimer.singleShot(5000, self._refresh_codex_status)
+        except OSError as exc:
+            self.codex_status_label.setText(
+                f"Не удалось открыть подключение: {exc}"
+            )
+            self.codex_connect_btn.setEnabled(True)
+
     def _create_cleanup_rules_subtab(self):
         """Build the Learned Rules cleanup subtab (rule teaching UI)."""
         scroll_area, layout = self._cleanup_subtab_scaffold()
-
-        # Title
-        title = QLabel("Learned Rules")
-        title.setObjectName("headerLabel")
-        layout.addWidget(title)
 
         # Learned rules: user-taught behaviors appended to the base prompt
         self.cleanup_rules_info = QLabel(
@@ -618,7 +929,7 @@ class SettingsDialog(QDialog):
         self.cleanup_rule_edit_btn.clicked.connect(self._edit_cleanup_rule)
         rule_btn_row.addWidget(self.cleanup_rule_edit_btn)
 
-        self.cleanup_rule_delete_btn = Button("Delete")
+        self.cleanup_rule_delete_btn = Button("Удалить")
         self.cleanup_rule_delete_btn.clicked.connect(self._delete_cleanup_rule)
         rule_btn_row.addWidget(self.cleanup_rule_delete_btn)
         rule_btn_row.addStretch()
@@ -627,98 +938,19 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return scroll_area
 
-    def _create_advanced_tab(self):
-        """Create advanced settings tab with scrollable content."""
-        tab = QWidget()
-        tab_layout = QVBoxLayout(tab)
-        tab_layout.setContentsMargins(0, 0, 0, 0)
-        tab_layout.setSpacing(0)
-
-        # Create scroll area
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-
-        # Content widget for scrollable area
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-
-        # Title
-        title = QLabel("Advanced Settings")
-        title.setObjectName("headerLabel")
-        layout.addWidget(title)
-
-        # Local engine knobs (model / device / quant) live in the main
-        # window's Engine Settings panel and the Model Manager, not here.
-
-        # Max file size
-        layout.addSpacing(12)
-        max_size_label = QLabel("Maximum File Size (MB):")
-        layout.addWidget(max_size_label)
-
-        self.max_size_spinbox = NoWheelSpinBox()
-        self.max_size_spinbox.setMinimum(1)
-        self.max_size_spinbox.setMaximum(500)
-        self.max_size_spinbox.setValue(23)
-        self.max_size_spinbox.setMinimumHeight(36)
-        layout.addWidget(self.max_size_spinbox)
-
-        # Enable logging checkbox
-        layout.addSpacing(12)
-        self.logging_check = QCheckBox("Enable detailed logging")
-        layout.addWidget(self.logging_check)
-
-        # Hugging Face model download policy
-        layout.addSpacing(16)
-        hf_title = QLabel("Hugging Face Downloads")
-        hf_title.setObjectName("sectionLabel")
-        layout.addWidget(hf_title)
-
-        hf_policy_label = QLabel("When a model is missing from this computer:")
-        layout.addWidget(hf_policy_label)
-
-        self.hf_policy_combo = NoWheelComboBox()
-        self.hf_policy_combo.setObjectName("hfPolicyCombo")
-        self.hf_policy_combo.addItem(
-            "Ask before downloading", HuggingFaceAccessPolicy.ASK
-        )
-        self.hf_policy_combo.addItem(
-            "Always allow downloads", HuggingFaceAccessPolicy.ALWAYS
-        )
-        self.hf_policy_combo.addItem(
-            "Never connect (fully offline)", HuggingFaceAccessPolicy.NEVER
-        )
-        self.hf_policy_combo.setMinimumHeight(36)
-        layout.addWidget(self.hf_policy_combo)
-
-        hf_info = QLabel(
-            "Models already on this computer always load locally without any "
-            "network checks. Hugging Face is only contacted to download a "
-            "missing model, and only when this policy (or a one-time approval) "
-            "allows it. An external HF_HUB_OFFLINE=1 environment variable "
-            "disables downloads entirely."
-        )
-        hf_info.setObjectName("infoLabel")
-        hf_info.setWordWrap(True)
-        layout.addWidget(hf_info)
-
-        layout.addStretch()
-
-        # Wire up scroll area
-        scroll_area.setWidget(content)
-        tab_layout.addWidget(scroll_area)
-        self._advanced_tab_index = self.tabs.addTab(tab, "Advanced")
-
     def focus_hf_policy(self):
-        """Open the Advanced tab with the Hugging Face policy control focused.
+        """Open transcription settings at the model-download policy.
 
         Used by the consent dialog's "Open Settings" action so the user lands
         directly on the download-policy control.
         """
         self.tabs.setCurrentIndex(self._advanced_tab_index)
         self.hf_policy_combo.setFocus()
+
+    def set_update_status(self, message: str, busy: bool = False):
+        """Reflect manual or startup update activity inside settings."""
+        self.update_status_label.setText(message)
+        self.check_updates_button.setEnabled(not busy)
 
     def _update_threshold_display(self, value):
         """Update threshold value display."""
@@ -743,7 +975,7 @@ class SettingsDialog(QDialog):
     def _update_cleanup_prompt_ui(self):
         """Enable cleanup controls when AI cleanup is on."""
         enabled = self.transcript_cleanup_check.isChecked()
-        for widget in (
+        provider_widgets = (
             self.cleanup_provider_label,
             self.cleanup_provider_combo,
             self.cleanup_model_sort_label,
@@ -760,14 +992,31 @@ class SettingsDialog(QDialog):
             self.cleanup_prompt_edit_btn,
             self.cleanup_prompt_reset_btn,
             self.cleanup_prompt_info,
+        )
+        for widget in provider_widgets:
+            widget.setEnabled(enabled)
+            widget.setVisible(enabled)
+
+        rules_enabled = enabled or self.codex_cleanup_check.isChecked()
+        for widget in (
             self.cleanup_rules_label,
             self.cleanup_rules_info,
             self.cleanup_rule_status,
             self.cleanup_rules_list,
         ):
-            widget.setEnabled(enabled)
+            widget.setEnabled(rules_enabled)
         if self._cleanup_models_loading:
             self.cleanup_model_refresh_btn.setEnabled(False)
+        if not enabled:
+            self.cleanup_models_status.clear()
+        elif self.tabs.currentIndex() == self._cleanup_tab_index:
+            provider = self._current_cleanup_provider()
+            sort = self._current_cleanup_sort()
+            if (
+                (provider, sort) not in self._cleanup_models_cache
+                and not self._cleanup_models_loading
+            ):
+                QTimer.singleShot(0, self._fetch_cleanup_models)
         self._update_cleanup_rule_controls()
 
     # ── Cleanup model live loading ─────────────────────────────────
@@ -806,7 +1055,10 @@ class SettingsDialog(QDialog):
 
     def _on_tab_changed(self, index: int):
         """Lazily fetch the model list the first time the Cleanup tab opens."""
-        if index != self._cleanup_tab_index:
+        if (
+            index != self._cleanup_tab_index
+            or not self.transcript_cleanup_check.isChecked()
+        ):
             return
         provider = self._current_cleanup_provider()
         sort = self._current_cleanup_sort()
@@ -847,8 +1099,7 @@ class SettingsDialog(QDialog):
         sort = self._current_cleanup_sort()
         if not force and (provider, sort) in self._cleanup_models_cache:
             self.cleanup_models_status.setText(
-                f"{len(self._cleanup_models_cache[(provider, sort)])} "
-                "models available"
+                f"Доступно моделей: {len(self._cleanup_models_cache[(provider, sort)])}"
             )
             self._populate_cleanup_models(provider, sort)
             return
@@ -857,7 +1108,7 @@ class SettingsDialog(QDialog):
 
         self._cleanup_models_loading = True
         self.cleanup_model_refresh_btn.setEnabled(False)
-        self.cleanup_models_status.setText("Loading models…")
+        self.cleanup_models_status.setText("Загрузка моделей…")
 
         def worker():
             try:
@@ -896,9 +1147,9 @@ class SettingsDialog(QDialog):
             self._fetch_cleanup_models()
             return
         if error:
-            self.cleanup_models_status.setText(f"Couldn't load models: {error}")
+            self.cleanup_models_status.setText(f"Не удалось загрузить модели: {error}")
             return
-        self.cleanup_models_status.setText(f"{len(models)} models available")
+        self.cleanup_models_status.setText(f"Доступно моделей: {len(models)}")
         self._populate_cleanup_models(provider, sort)
 
     def _populate_cleanup_models(self, provider: str, sort: str):
@@ -934,7 +1185,10 @@ class SettingsDialog(QDialog):
 
     def _update_cleanup_rule_controls(self):
         """Gate rule controls on the master toggle and worker activity."""
-        enabled = self.transcript_cleanup_check.isChecked()
+        enabled = (
+            self.transcript_cleanup_check.isChecked()
+            or self.codex_cleanup_check.isChecked()
+        )
         busy = self._rule_polishing or self._rule_dictation_state != "idle"
         self.cleanup_rule_input.setEnabled(enabled and not busy)
         self.cleanup_rule_add_btn.setEnabled(enabled and not busy)
@@ -968,16 +1222,16 @@ class SettingsDialog(QDialog):
             return
         staged = {r.casefold() for r in self._staged_cleanup_rules()}
         if raw.casefold() in staged:
-            self.cleanup_rule_status.setText("That rule already exists.")
+            self.cleanup_rule_status.setText("Такое правило уже существует.")
             return
         if self.cleanup_rules_list.count() >= config.MAX_TRANSCRIPT_CLEANUP_RULES:
             self.cleanup_rule_status.setText(
-                f"Rule limit reached ({config.MAX_TRANSCRIPT_CLEANUP_RULES})."
+                f"Достигнут лимит правил: {config.MAX_TRANSCRIPT_CLEANUP_RULES}."
             )
             return
 
         self._rule_polishing = True
-        self.cleanup_rule_status.setText("Polishing rule with AI…")
+        self.cleanup_rule_status.setText("ИИ улучшает правило…")
         self._update_cleanup_rule_controls()
 
         # Use the dialog's current (possibly unsaved) selections so polish
@@ -1011,7 +1265,7 @@ class SettingsDialog(QDialog):
         self._update_cleanup_rule_controls()
 
         notice = (
-            "AI polish unavailable — your wording will be saved as written."
+            "Обработка ИИ недоступна — правило будет сохранено без изменений."
             if error
             else None
         )
@@ -1023,7 +1277,7 @@ class SettingsDialog(QDialog):
             return
         staged = {r.casefold() for r in self._staged_cleanup_rules()}
         if rule.casefold() in staged:
-            self.cleanup_rule_status.setText("That rule already exists.")
+            self.cleanup_rule_status.setText("Такое правило уже существует.")
             return
         self.cleanup_rules_list.addItem(rule)
         self.cleanup_rule_input.clear()
@@ -1057,7 +1311,7 @@ class SettingsDialog(QDialog):
         if self._rule_dictation_state != "idle" or self._rule_polishing:
             return
         if self.on_dictation_transcribe is None:
-            self.cleanup_rule_status.setText("Dictation is unavailable.")
+            self.cleanup_rule_status.setText("Диктовка недоступна.")
             return
 
         # Own a private recorder writing to a temp file so dictation never
@@ -1073,11 +1327,11 @@ class SettingsDialog(QDialog):
             self._rule_recorder_device = device_id
 
         if not self._rule_recorder.start_recording():
-            self.cleanup_rule_status.setText("Couldn't start recording.")
+            self.cleanup_rule_status.setText("Не удалось начать запись.")
             return
         self._rule_dictation_state = "recording"
-        self.cleanup_rule_mic_btn.setText("Stop")
-        self.cleanup_rule_status.setText("Recording… click Stop when done.")
+        self.cleanup_rule_mic_btn.setText("Остановить")
+        self.cleanup_rule_status.setText("Идёт запись… Нажмите «Остановить», когда закончите.")
         self._rule_dictation_timer.start()
         self._update_cleanup_rule_controls()
 
@@ -1087,8 +1341,8 @@ class SettingsDialog(QDialog):
             return
         self._rule_dictation_timer.stop()
         self._rule_dictation_state = "transcribing"
-        self.cleanup_rule_mic_btn.setText("Transcribing…")
-        self.cleanup_rule_status.setText("Transcribing dictation…")
+        self.cleanup_rule_mic_btn.setText("Расшифровка…")
+        self.cleanup_rule_status.setText("Расшифровываем диктовку…")
         self._update_cleanup_rule_controls()
 
         recorder = self._rule_recorder
@@ -1102,15 +1356,15 @@ class SettingsDialog(QDialog):
                 recorder.stop_recording()
                 recorder.wait_for_stop_completion()
                 if not recorder.has_recording_data():
-                    error = "No audio was captured."
+                    error = "Не удалось записать звук."
                 elif not recorder.save_recording(audio_path):
-                    error = "Couldn't save the dictation audio."
+                    error = "Не удалось сохранить аудио диктовки."
                 else:
                     text = transcribe(audio_path) or ""
                     if not text.strip():
-                        error = "Nothing was transcribed."
+                        error = "Не удалось распознать речь."
             except Exception as exc:
-                error = str(exc) or "Transcription failed."
+                error = f"Ошибка расшифровки: {exc}" if str(exc) else "Не удалось выполнить расшифровку."
             finally:
                 recorder.clear_recording_data()
                 try:
@@ -1130,7 +1384,7 @@ class SettingsDialog(QDialog):
     def _on_rule_dictation_finished(self, text: str, error: str):
         """Apply a finished dictation on the main thread."""
         self._rule_dictation_state = "idle"
-        self.cleanup_rule_mic_btn.setText("Dictate")
+        self.cleanup_rule_mic_btn.setText("Продиктовать")
         self._update_cleanup_rule_controls()
         if error:
             self.cleanup_rule_status.setText(error)
@@ -1160,6 +1414,13 @@ class SettingsDialog(QDialog):
         for device_id, device_name in devices:
             self.audio_device_combo.addItem(device_name, device_id)
 
+    def _choose_recordings_folder(self):
+        selected = QFileDialog.getExistingDirectory(
+            self, "Выберите папку для записей", self.recordings_folder_edit.text()
+        )
+        if selected:
+            self.recordings_folder_edit.setText(selected)
+
     def _open_hotkey_dialog(self):
         """Open hotkey configuration dialog."""
         logger.info("Opening hotkey configuration dialog")
@@ -1176,6 +1437,20 @@ class SettingsDialog(QDialog):
             # Load checkboxes
             self.auto_paste_check.setChecked(settings.get(SettingsKey.AUTO_PASTE, True))
             self.copy_clipboard_check.setChecked(settings.get(SettingsKey.COPY_CLIPBOARD, True))
+            self.codex_cleanup_check.setChecked(
+                resolve_codex_cleanup_enabled(settings)
+            )
+            codex_mode_index = self.codex_mode_combo.findData(
+                resolve_codex_cleanup_mode(settings)
+            )
+            self.codex_mode_combo.setCurrentIndex(max(0, codex_mode_index))
+            codex_trigger_index = self.codex_trigger_combo.findData(
+                resolve_codex_cleanup_trigger(settings)
+            )
+            self.codex_trigger_combo.setCurrentIndex(
+                max(0, codex_trigger_index)
+            )
+            self._update_codex_cleanup_ui()
             self.transcript_cleanup_check.setChecked(
                 settings.get(
                     SettingsKey.TRANSCRIPT_CLEANUP_ENABLED,
@@ -1225,6 +1500,21 @@ class SettingsDialog(QDialog):
 
             self._update_cleanup_prompt_ui()
             self.minimize_tray_check.setChecked(settings.get(SettingsKey.MINIMIZE_TRAY, True))
+            self.recordings_folder_edit.setText(
+                settings.get(SettingsKey.RECORDINGS_FOLDER, config.RECORDINGS_FOLDER)
+            )
+
+            self.video_recording_enabled_check.setChecked(settings.get(
+                SettingsKey.VIDEO_RECORDING_ENABLED,
+                config.VIDEO_RECORDING_ENABLED,
+            ))
+            self.video_fps_spinbox.setValue(int(settings.get(
+                SettingsKey.VIDEO_RECORDING_FPS, config.VIDEO_RECORDING_FPS
+            )))
+            video_quality_index = self.video_quality_combo.findData(int(settings.get(
+                SettingsKey.VIDEO_RECORDING_CRF, config.VIDEO_RECORDING_CRF
+            )))
+            self.video_quality_combo.setCurrentIndex(max(0, video_quality_index))
 
             # Load recording retention
             retention_mode = settings.get(
@@ -1254,6 +1544,9 @@ class SettingsDialog(QDialog):
                 resolve_streaming_overlay_font_size(settings)
             )
             self._update_streaming_font_ui()
+            overlay_visibility = resolve_overlay_state_visibility(settings)
+            for state, checkbox in self.overlay_state_checks.items():
+                checkbox.setChecked(overlay_visibility[state])
 
             # Typed load performs legacy hf_hub_offline migration
             policy = settings_manager.load_hf_access_policy()
@@ -1275,6 +1568,9 @@ class SettingsDialog(QDialog):
             # Use defaults on error
             self.auto_paste_check.setChecked(True)
             self.copy_clipboard_check.setChecked(True)
+            self.codex_cleanup_check.setChecked(False)
+            self.codex_mode_combo.setCurrentIndex(0)
+            self._update_codex_cleanup_ui()
             self.transcript_cleanup_check.setChecked(config.TRANSCRIPT_CLEANUP_ENABLED)
             self.cleanup_prompt_edit.setPlainText(config.TRANSCRIPT_CLEANUP_PROMPT)
             self.cleanup_rules_list.clear()
@@ -1294,6 +1590,14 @@ class SettingsDialog(QDialog):
             self.cleanup_reasoning_combo.setCurrentIndex(0)
             self._update_cleanup_prompt_ui()
             self.minimize_tray_check.setChecked(True)
+            self.recordings_folder_edit.setText(config.RECORDINGS_FOLDER)
+            self.video_recording_enabled_check.setChecked(
+                config.VIDEO_RECORDING_ENABLED
+            )
+            self.video_fps_spinbox.setValue(config.VIDEO_RECORDING_FPS)
+            self.video_quality_combo.setCurrentIndex(
+                max(0, self.video_quality_combo.findData(config.VIDEO_RECORDING_CRF))
+            )
             retention_index = self.recording_retention_combo.findData(
                 RecordingRetentionMode.CUSTOM
             )
@@ -1303,6 +1607,10 @@ class SettingsDialog(QDialog):
             self.streaming_enabled_check.setChecked(config.STREAMING_ENABLED)
             self.streaming_font_size_spinbox.setValue(config.STREAMING_OVERLAY_FONT_SIZE)
             self._update_streaming_font_ui()
+            for state, checkbox in self.overlay_state_checks.items():
+                checkbox.setChecked(
+                    OverlayBadge.DEFAULT_VISIBILITY[state]
+                )
             self.hf_policy_combo.setCurrentIndex(
                 max(0, self.hf_policy_combo.findData(HuggingFaceAccessPolicy.ASK))
             )
@@ -1334,6 +1642,17 @@ class SettingsDialog(QDialog):
             # Update with new values
             settings[SettingsKey.AUTO_PASTE] = self.auto_paste_check.isChecked()
             settings[SettingsKey.COPY_CLIPBOARD] = self.copy_clipboard_check.isChecked()
+            settings[SettingsKey.CODEX_CLEANUP_ENABLED] = (
+                self.codex_cleanup_check.isChecked()
+            )
+            settings[SettingsKey.CODEX_CLEANUP_MODE] = (
+                self.codex_mode_combo.currentData()
+                or CodexCleanupMode.CORRECT
+            )
+            settings[SettingsKey.CODEX_CLEANUP_TRIGGER] = (
+                self.codex_trigger_combo.currentData()
+                or CodexCleanupTrigger.MANUAL
+            )
             settings[SettingsKey.TRANSCRIPT_CLEANUP_ENABLED] = (
                 self.transcript_cleanup_check.isChecked()
             )
@@ -1368,6 +1687,10 @@ class SettingsDialog(QDialog):
             settings[SettingsKey.STREAMING_OVERLAY_FONT_SIZE] = (
                 self.streaming_font_size_spinbox.value()
             )
+            settings[SettingsKey.OVERLAY_STATE_VISIBILITY] = {
+                state: checkbox.isChecked()
+                for state, checkbox in self.overlay_state_checks.items()
+            }
             # Drop legacy keys so streaming_enabled is the single source of truth
             settings.pop(SettingsKey.STREAMING_OVERLAY_ENABLED, None)
             settings.pop(SettingsKey.STREAMING_PASTE_ENABLED, None)
@@ -1380,6 +1703,18 @@ class SettingsDialog(QDialog):
                 self.recording_retention_combo.currentData()
             )
             settings[SettingsKey.MAX_SAVED_RECORDINGS] = self.max_recordings_spinbox.value()
+            settings[SettingsKey.VIDEO_RECORDING_ENABLED] = (
+                self.video_recording_enabled_check.isChecked()
+            )
+            settings[SettingsKey.VIDEO_RECORDING_FPS] = self.video_fps_spinbox.value()
+            settings[SettingsKey.VIDEO_RECORDING_CRF] = (
+                self.video_quality_combo.currentData() or config.VIDEO_RECORDING_CRF
+            )
+            chosen_folder = self.recordings_folder_edit.text().strip() or config.RECORDINGS_FOLDER
+            settings[SettingsKey.RECORDINGS_FOLDER] = chosen_folder
+            if chosen_folder != history_manager.recordings_folder:
+                history_manager.recordings_folder = chosen_folder
+                os.makedirs(chosen_folder, exist_ok=True)
 
             # Save audio input device (None for system default)
             if new_audio_device is None:
@@ -1406,7 +1741,25 @@ class SettingsDialog(QDialog):
             settings['_hf_policy_changed'] = hf_policy_changed
             self.settings_changed.emit(settings)
 
-            self.accept()
+            if self._embedded_mode:
+                self.save_btn.setText("Сохранено")
+                QTimer.singleShot(
+                    1200,
+                    lambda: self.save_btn.setText("Сохранить")
+                    if self.save_btn
+                    else None,
+                )
+            else:
+                self.accept()
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
-            self.reject()
+            if self._embedded_mode:
+                self.save_btn.setText("Ошибка сохранения")
+                QTimer.singleShot(
+                    1600,
+                    lambda: self.save_btn.setText("Сохранить")
+                    if self.save_btn
+                    else None,
+                )
+            else:
+                self.reject()

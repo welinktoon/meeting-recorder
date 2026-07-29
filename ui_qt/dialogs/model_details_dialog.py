@@ -82,11 +82,10 @@ class ModelDetailsDialog(QDialog):
         self.model_details = model_details
         self.fact_labels = {}
 
-        self.setWindowTitle(f"{model_details.model_name} Model Details")
+        self.setWindowTitle(f"Модель {model_details.model_name} — сведения")
         self.setModal(True)
         self.setMinimumSize(600, 560)
         self.resize(640, 680)
-        self.setStyleSheet(_DETAILS_STYLE)
 
         self._setup_ui()
 
@@ -100,10 +99,10 @@ class ModelDetailsDialog(QDialog):
         header.setSpacing(10)
         title = QLabel(self.model_details.model_name)
         title.setObjectName("modelDetailsTitle")
-        title.setAccessibleName("Model name")
+        title.setAccessibleName("Название модели")
         header.addWidget(title)
         header.addStretch()
-        tags = QLabel(self.model_details.compact_tags)
+        tags = QLabel(self._localized_tags())
         tags.setObjectName("modelDetailsTags")
         tags.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header.addWidget(tags)
@@ -123,23 +122,22 @@ class ModelDetailsDialog(QDialog):
         content_layout.setSpacing(10)
 
         content_layout.addWidget(
-            self._text_section("Overview", self.model_details.description)
+            self._text_section("Обзор", self._localized_description())
         )
         content_layout.addWidget(self._technical_section())
         content_layout.addWidget(
-            self._text_section("Best for", self.model_details.best_for)
+            self._text_section("Лучше всего подходит", self._localized_best_for())
         )
         limitations = "\n".join(
-            f"\u2022 {item}" for item in self.model_details.limitations
+            f"\u2022 {item}" for item in self._localized_limitations()
         )
         content_layout.addWidget(
-            self._text_section("Tradeoffs and limitations", limitations)
+            self._text_section("Ограничения", limitations)
         )
 
         source_note = QLabel(
-            "Technical figures are bundled from the linked upstream model "
-            "cards. Speed and memory usage vary with hardware, compute type, "
-            "audio, and decoding settings."
+            "Скорость и использование памяти зависят от оборудования, "
+            "типа вычислений, качества аудио и настроек распознавания."
         )
         source_note.setObjectName("modelDetailsSourceNote")
         source_note.setWordWrap(True)
@@ -151,20 +149,20 @@ class ModelDetailsDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.setSpacing(8)
-        self.repository_button = PrimaryButton("Open on Hugging Face")
+        self.repository_button = PrimaryButton("Открыть на Hugging Face")
         self.repository_button.setObjectName("modelDetailsRepositoryButton")
         self.repository_button.setToolTip(self.model_details.repository_url)
         self.repository_button.clicked.connect(self._open_repository)
         footer.addWidget(self.repository_button)
 
-        self.origin_button = Button("View Original Model")
+        self.origin_button = Button("Исходная модель")
         self.origin_button.setObjectName("modelDetailsOriginButton")
         self.origin_button.setToolTip(self.model_details.origin_url)
         self.origin_button.clicked.connect(self._open_origin)
         footer.addWidget(self.origin_button)
 
         footer.addStretch()
-        close_button = Button("Close")
+        close_button = Button("Закрыть")
         close_button.setObjectName("modelDetailsCloseButton")
         close_button.clicked.connect(self.accept)
         footer.addWidget(close_button)
@@ -199,7 +197,7 @@ class ModelDetailsDialog(QDialog):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
-        heading = QLabel("Technical profile")
+        heading = QLabel("Технические сведения")
         heading.setObjectName("modelDetailsSectionTitle")
         layout.addWidget(heading)
 
@@ -210,18 +208,18 @@ class ModelDetailsDialog(QDialog):
         facts.setColumnStretch(1, 1)
 
         rows = (
-            ("Origin", self.model_details.origin_name),
-            ("Repository", self.model_details.repository_id),
-            ("Maintainer", self.model_details.maintainer),
-            ("Family", self.model_details.family),
-            ("Languages", self.model_details.language_support),
-            ("Tasks", self.model_details.task_support),
-            ("Parameters", self.model_details.parameter_count),
-            ("Published speed", self.model_details.relative_performance),
-            ("Memory guidance", self.model_details.memory_guidance),
-            ("Download size", self.model_details.download_size),
-            ("Local format", self.model_details.runtime_format),
-            ("License", self.model_details.license),
+            ("Исходная модель", self.model_details.origin_name),
+            ("Репозиторий", self.model_details.repository_id),
+            ("Автор сборки", self.model_details.maintainer),
+            ("Семейство", self.model_details.family),
+            ("Языки", "Только английский" if self._is_english_only() else "Многоязычная"),
+            ("Задача", "Распознавание английской речи" if self._is_english_only() else "Многоязычное распознавание речи"),
+            ("Параметры", self._localized_parameter_count()),
+            ("Скорость", "Зависит от оборудования и режима вычислений"),
+            ("Память", "Зависит от устройства и выбранного типа вычислений"),
+            ("Размер загрузки", self.model_details.download_size.replace("GB", "ГБ").replace("MB", "МБ")),
+            ("Локальный формат", "CTranslate2, веса FP16"),
+            ("Лицензия", self.model_details.license),
         )
         for row, (caption, value) in enumerate(rows):
             caption_label = QLabel(caption)
@@ -242,6 +240,58 @@ class ModelDetailsDialog(QDialog):
 
         layout.addLayout(facts)
         return frame
+
+    def _localized_tags(self) -> str:
+        parts = [
+            "Только английский"
+            if self._is_english_only()
+            else "Многоязычная"
+        ]
+        if self.model_details.model_name.startswith("distil-"):
+            parts.append("Облегчённая")
+        return " / ".join(parts)
+
+    def _localized_description(self) -> str:
+        name = self.model_details.model_name
+        if name.startswith(("tiny", "base")):
+            quality = "компактная и быстрая"
+        elif name.startswith(("small", "turbo")):
+            quality = "сбалансированная по скорости и точности"
+        else:
+            quality = "повышенной точности"
+        return (
+            f"Локальная модель Whisper {name}: {quality}. "
+            "После установки работает на этом компьютере без облачного API."
+        )
+
+    def _localized_best_for(self) -> str:
+        name = self.model_details.model_name
+        if name.startswith(("tiny", "base")):
+            return "Быстрые черновики и компьютеры с ограниченными ресурсами."
+        if name.startswith(("small", "turbo")):
+            return "Повседневные заметки, встречи и хороший баланс скорости и качества."
+        return "Сложные записи, где точность важнее скорости обработки."
+
+    def _localized_limitations(self) -> tuple[str, ...]:
+        limitations = []
+        if self._is_english_only():
+            limitations.append("Распознаёт только английскую речь.")
+        if self.model_details.model_name.startswith(("tiny", "base")):
+            limitations.append("Точность ниже на шумной записи и при сложной терминологии.")
+        else:
+            limitations.append("Требует больше памяти и времени на обработку.")
+        return tuple(limitations)
+
+    def _localized_parameter_count(self) -> str:
+        return (
+            self.model_details.parameter_count
+            .replace("million", "млн")
+            .replace("billion", "млрд")
+        )
+
+    def _is_english_only(self) -> bool:
+        name = self.model_details.model_name
+        return name.endswith(".en") or name.startswith("distil-")
 
     def _open_repository(self) -> None:
         """Open the faster-whisper conversion repository in the browser."""

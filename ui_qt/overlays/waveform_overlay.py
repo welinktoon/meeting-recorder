@@ -15,8 +15,13 @@ from PyQt6.QtGui import (
     QPainter, QPainterPath, QColor, QBrush, QPen,
     QLinearGradient, QFont, QFontMetrics, QCursor
 )
+import qtawesome as qta
 from config import config
-from services.settings import settings_manager, resolve_streaming_overlay_font_size
+from services.settings import (
+    resolve_overlay_state_visibility,
+    resolve_streaming_overlay_font_size,
+    settings_manager,
+)
 from ui_qt.utils.overlay_position import (
     max_height_for_anchor,
     preferred_overlay_position,
@@ -69,7 +74,7 @@ class STTParticle:
 
 
 class WaveformOverlay(QWidget):
-    """Waveform overlay with smooth animations."""
+    """Small, quiet status pill for recording and transcription."""
 
     state_changed = pyqtSignal(str)
 
@@ -87,6 +92,28 @@ class WaveformOverlay(QWidget):
     STATE_LARGE_FILE_SPLITTING = "large_file_splitting"
     STATE_LARGE_FILE_PROCESSING = "large_file_processing"
 
+    _STATE_PRESENTATION = {
+        STATE_RECORDING: ("fa6s.microphone", "Запись", "#7eb6ff"),
+        STATE_STREAMING: ("fa6s.microphone", "Запись", "#7eb6ff"),
+        STATE_PROCESSING: ("fa6s.hourglass-half", "Подготовка", "#aeb7c4"),
+        STATE_TRANSCRIBING: ("fa6s.file-lines", "Расшифровка", "#7eb6ff"),
+        STATE_CLEANING: ("fa6s.wand-magic-sparkles", "Правка текста", "#b9a2ff"),
+        STATE_CANCELING: ("fa6s.xmark", "Отменено", "#ff8a84"),
+        STATE_STT_ENABLE: ("fa6s.check", "Включено", "#6fd78a"),
+        STATE_STT_DISABLE: ("fa6s.power-off", "Выключено", "#aeb7c4"),
+        STATE_COPIED: ("fa6s.copy", "Скопировано", "#7eb6ff"),
+        STATE_LARGE_FILE_SPLITTING: (
+            "fa6s.scissors",
+            "Подготовка файла",
+            "#aeb7c4",
+        ),
+        STATE_LARGE_FILE_PROCESSING: (
+            "fa6s.file-lines",
+            "Обработка файла",
+            "#7eb6ff",
+        ),
+    }
+
     def __init__(self):
         """Initialize the overlay."""
         super().__init__()
@@ -95,9 +122,12 @@ class WaveformOverlay(QWidget):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool
+            Qt.WindowType.Tool |
+            Qt.WindowType.NoDropShadowWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         if sys.platform == "darwin":
             # On macOS, Qt Tool windows are hidden whenever the app is not the
             # frontmost application (or when its main window is minimized). During
@@ -156,36 +186,7 @@ class WaveformOverlay(QWidget):
             # Draw background with blur effect
             self._draw_background(painter)
 
-            # Get drawing rect
-            rect = self.rect()
-
-            # Draw state-specific content using style
-            if self.current_state == self.STATE_RECORDING:
-                if self.style:
-                    self.style.draw_recording_state(painter, rect, "Recording...")
-            elif self.current_state == self.STATE_STREAMING:
-                self._draw_streaming_state(painter, rect)
-            elif self.current_state == self.STATE_PROCESSING:
-                if self.style:
-                    self.style.draw_processing_state(painter, rect, "Processing...")
-            elif self.current_state == self.STATE_TRANSCRIBING:
-                if self.style:
-                    self.style.draw_transcribing_state(painter, rect, "Transcribing...")
-            elif self.current_state == self.STATE_CLEANING:
-                self._draw_cleaning_state(painter)
-            elif self.current_state == self.STATE_CANCELING:
-                if self.style:
-                    self.style.draw_canceling_state(painter, rect, "Canceled")
-            elif self.current_state == self.STATE_STT_ENABLE:
-                self._draw_stt_enable_state(painter)
-            elif self.current_state == self.STATE_STT_DISABLE:
-                self._draw_stt_disable_state(painter)
-            elif self.current_state == self.STATE_COPIED:
-                self._draw_copied_state(painter)
-            elif self.current_state == self.STATE_LARGE_FILE_SPLITTING:
-                self._draw_large_file_splitting_state(painter)
-            elif self.current_state == self.STATE_LARGE_FILE_PROCESSING:
-                self._draw_large_file_processing_state(painter)
+            self._draw_compact_state(painter)
         except Exception as e:
             # Log error but don't crash the overlay
             logger.error(f"Error drawing waveform frame: {e}", exc_info=True)
@@ -195,9 +196,45 @@ class WaveformOverlay(QWidget):
                 painter.fillRect(self.rect(), QColor(28, 28, 30, 238))
                 painter.setPen(QPen(QColor(245, 245, 247)))
                 painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-                painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Error")
+                painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Ошибка")
             except Exception:
                 pass  # If even fallback fails, just skip
+
+    def _draw_compact_state(self, painter: QPainter):
+        """Draw one static icon and a short Russian status label."""
+        icon_name, label, color = self._STATE_PRESENTATION.get(
+            self.current_state,
+            ("fa6s.circle-info", "Готово", "#aeb7c4"),
+        )
+        icon_size = 15
+        icon_left = 14
+        icon_top = (self.height() - icon_size) // 2
+        try:
+            icon = qta.icon(icon_name, color=color)
+            painter.drawPixmap(
+                icon_left,
+                icon_top,
+                icon.pixmap(icon_size, icon_size),
+            )
+        except Exception:
+            logger.debug("Could not draw overlay icon %s", icon_name)
+
+        painter.setPen(QColor(244, 246, 250, 225))
+        font = QFont("Segoe UI")
+        font.setPixelSize(12)
+        font.setWeight(QFont.Weight.Medium)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.0)
+        painter.setFont(font)
+        painter.drawText(
+            QRect(
+                icon_left + icon_size + 10,
+                0,
+                self.width() - icon_left - icon_size - 22,
+                self.height(),
+            ),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            label,
+        )
 
     def _draw_streaming_state(self, painter: QPainter, rect: QRect):
         """Draw recording particles plus live preview text near the cursor.
@@ -208,7 +245,7 @@ class WaveformOverlay(QWidget):
         """
         particle_height = min(self._base_height, rect.height())
         particle_rect = QRect(0, 0, rect.width(), particle_height)
-        status = "Listening..." if not self._streaming_preview_text else ""
+        status = "Запись" if not self._streaming_preview_text else ""
         if self.style:
             # Keep particle physics in the compact recording band even when the
             # overlay grows to fit preview text.
@@ -283,19 +320,12 @@ class WaveformOverlay(QWidget):
         return screen.availableGeometry()
 
     def _reposition_near_anchor(self):
-        """Move the overlay near its anchor while keeping it fully on-screen."""
-        if self._anchor_pos is None:
-            return
+        """Place the unobtrusive pill in the lower-right screen corner."""
         available = self._available_geometry_for_anchor()
         if available is None:
-            self.move(self._anchor_pos.x() + 10, self._anchor_pos.y() + 10)
             return
-        x, y = preferred_overlay_position(
-            self._anchor_pos,
-            self.overlay_width,
-            self.overlay_height,
-            available,
-        )
+        x = available.right() - self.overlay_width - 24
+        y = available.bottom() - self.overlay_height - 24
         self.move(x, y)
 
     def _effective_streaming_max_height(self) -> int:
@@ -310,46 +340,22 @@ class WaveformOverlay(QWidget):
         )
 
     def _apply_streaming_height(self):
-        """Grow or shrink the overlay to fit preview text while streaming."""
-        if self.current_state != self.STATE_STREAMING and not self._streaming_preview_text:
-            if self.height() != self._base_height:
-                self.overlay_height = self._base_height
-                self.setFixedSize(self.overlay_width, self.overlay_height)
-                self._reposition_near_anchor()
-            return
-
-        if not self._streaming_preview_text:
-            target_height = self._base_height
-        else:
-            effective_max = self._effective_streaming_max_height()
-            font = self._streaming_preview_font()
-            metrics_rect = QRect(0, 0, self.overlay_width - 20, effective_max)
-            fm = QFontMetrics(font)
-            bounded = fm.boundingRect(
-                metrics_rect,
-                int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
-                self._streaming_preview_text,
-            )
-            text_height = bounded.height() + 16
-            target_height = min(
-                effective_max,
-                max(self._base_height, self._base_height - 8 + text_height),
-            )
-
-        if target_height != self.overlay_height:
-            self.overlay_height = target_height
+        """Keep live status compact instead of growing over the active app."""
+        if self.overlay_height != self._base_height:
+            self.overlay_height = self._base_height
             self.setFixedSize(self.overlay_width, self.overlay_height)
-            self._reposition_near_anchor()
+        self._reposition_near_anchor()
 
     def _draw_background(self, painter: QPainter):
         """Draw the frosted rounded background matching the app theme."""
         # Inset by half the pen width so the 1px border isn't clipped.
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
-        path.addRoundedRect(rect, 12, 12)
+        radius = rect.height() / 2
+        path.addRoundedRect(rect, radius, radius)
 
-        painter.fillPath(path, QColor(28, 28, 30, 238))
-        painter.setPen(QPen(QColor(84, 84, 86, 170), 1))
+        painter.fillPath(path, QColor(22, 26, 33, 188))
+        painter.setPen(QPen(QColor(255, 255, 255, 32), 1))
         painter.drawPath(path)
 
     def _draw_particle_swarm(self, painter: QPainter):
@@ -394,7 +400,7 @@ class WaveformOverlay(QWidget):
         # Status text
         painter.setPen(QPen(QColor(245, 245, 247)))
         painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        painter.drawText(rect.adjusted(0, h - 25, 0, 0), Qt.AlignmentFlag.AlignCenter, "Enabled")
+        painter.drawText(rect.adjusted(0, h - 25, 0, 0), Qt.AlignmentFlag.AlignCenter, "Включено")
 
     def _draw_stt_disable_state(self, painter: QPainter):
         """Draw STT disable state with power down particle effect."""
@@ -415,7 +421,7 @@ class WaveformOverlay(QWidget):
         # Status text
         painter.setPen(QPen(QColor(245, 245, 247)))
         painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        painter.drawText(rect.adjusted(0, h - 25, 0, 0), Qt.AlignmentFlag.AlignCenter, "Disabled")
+        painter.drawText(rect.adjusted(0, h - 25, 0, 0), Qt.AlignmentFlag.AlignCenter, "Выключено")
 
     def _draw_copied_state(self, painter: QPainter):
         """Draw copied to clipboard state with sparkle particle effect."""
@@ -448,7 +454,7 @@ class WaveformOverlay(QWidget):
         # Status text
         painter.setPen(QPen(QColor(245, 245, 247)))
         painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        painter.drawText(rect.adjusted(0, h - 25, 0, 0), Qt.AlignmentFlag.AlignCenter, "Copied!")
+        painter.drawText(rect.adjusted(0, h - 25, 0, 0), Qt.AlignmentFlag.AlignCenter, "Скопировано")
 
     def _draw_cleaning_state(self, painter: QPainter):
         """Draw AI cleanup state with twinkling purple sparkles."""
@@ -483,7 +489,7 @@ class WaveformOverlay(QWidget):
         painter.drawText(
             rect.adjusted(0, h - 25, 0, 0),
             Qt.AlignmentFlag.AlignCenter,
-            "Cleaning up...",
+            "Правка текста…",
         )
 
     @staticmethod
@@ -588,71 +594,27 @@ class WaveformOverlay(QWidget):
         # Status text with file size
         painter.setPen(QPen(cyan))
         painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        text = f"Processing ({self.large_file_info.file_size_mb:.1f} MB)..."
+        text = f"Обработка: {self.large_file_info.file_size_mb:.1f} МБ…"
         painter.drawText(rect.adjusted(0, h - 25, 0, 0), Qt.AlignmentFlag.AlignCenter, text)
 
     def _update_animation(self):
-        """Update animation time and redraw."""
-        # Calculate delta time
-        current_time = time.time()
-        delta_time = current_time - self.last_frame_time
-        self.last_frame_time = current_time
-
-        self.animation_time += delta_time
-
-        # Update style animation
-        if self.style:
-            self.style.update_animation_time(delta_time)
-
-        if self.current_state == self.STATE_CANCELING:
-            self.cancel_progress = min(1.0, self.animation_time / 0.8)
-            if self.cancel_progress >= 1.0:
-                self.set_state(self.STATE_IDLE)
-                self.timer.stop()
-        elif self.current_state in [self.STATE_STT_ENABLE, self.STATE_STT_DISABLE, self.STATE_COPIED]:
-            # Update particles
-            self._update_stt_particles(delta_time)
-
+        """Compatibility hook; compact states intentionally do not animate."""
+        self.timer.stop()
         self.update()
 
     def set_state(self, state: str):
         """Set the overlay state."""
+        if not resolve_overlay_state_visibility().get(state, True):
+            self.hide()
+            return
         if self.current_state != state:
             self.current_state = state
             self.animation_time = 0.0
             self.cancel_progress = 0.0
             self.last_frame_time = time.time()  # Reset to prevent huge delta on first frame
 
-            # Set canceling start time for style
-            if state == self.STATE_CANCELING and self.style:
-                self.style.set_canceling_start_time(time.time())
-
-            # Initialize particles for STT and copied states
-            if state == self.STATE_STT_ENABLE:
-                self._init_particles(
-                    count=60, hue_range=(120, 180), mode='converge',
-                    speed_range=(60, 100), size_range=(3.0, 6.0),
-                    edge_radius=(50, 90), velocity_jitter=15.0,
-                )
-            elif state == self.STATE_STT_DISABLE:
-                self._init_particles(
-                    count=60, hue_range=(0, 40), mode='explode',
-                    speed_range=(100, 200), size_range=(3.0, 6.0),
-                    center_jitter=8.0,
-                )
-            elif state == self.STATE_COPIED:
-                self._init_particles(
-                    count=50, hue_range=(180, 220), mode='converge',
-                    speed_range=(50, 90), size_range=(2.5, 5.0),
-                    edge_radius=(45, 80), velocity_jitter=10.0,
-                )
-            else:
-                self.stt_particles = []
-
-            if state == self.STATE_IDLE:
-                self.timer.stop()
-            else:
-                self.timer.start(1000 // self.frame_rate)
+            self.stt_particles = []
+            self.timer.stop()
 
             if state != self.STATE_STREAMING:
                 self._streaming_preview_text = ""
@@ -662,6 +624,7 @@ class WaveformOverlay(QWidget):
 
             self.state_changed.emit(state)
             logger.debug(f"Overlay state changed to: {state}")
+            self.update()
 
             # Auto-hide after delay for certain states
             if state in [self.STATE_STT_ENABLE, self.STATE_STT_DISABLE, self.STATE_COPIED]:
@@ -778,23 +741,28 @@ class WaveformOverlay(QWidget):
         super().hide()
 
     def show_at_cursor(self, state: Optional[str] = None):
-        """Show overlay near the cursor with optional state.
-
-        Positions below-right of the cursor when possible, flipping and clamping
-        so the overlay stays fully inside the monitor's available geometry.
+        """Show the compact overlay in the lower-right screen corner.
 
         Args:
             state: Optional state to set. If None, uses current state or RECORDING as default.
         """
+        target_state = (
+            state
+            if state is not None
+            else self.current_state
+            if self.current_state != self.STATE_IDLE
+            else self.STATE_RECORDING
+        )
+        if not resolve_overlay_state_visibility().get(target_state, True):
+            self.hide()
+            return
+
         self._anchor_pos = QCursor.pos()
         self._reposition_near_anchor()
         self.show()
 
         # Set state if provided, otherwise default to RECORDING
-        if state is not None:
-            self.set_state(state)
-        elif self.current_state == self.STATE_IDLE:
-            self.set_state(self.STATE_RECORDING)
+        self.set_state(target_state)
 
         # Height may change when entering streaming; re-clamp after state apply.
         self._reposition_near_anchor()

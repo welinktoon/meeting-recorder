@@ -62,15 +62,6 @@ class LocalEngineControls(QWidget):
         "font-size: 10px; padding: 2px; }"
         "QPushButton:hover { text-decoration: underline; }"
     )
-    _COMBO_STYLE = (
-        "QComboBox { background-color: #2c2c2e; color: #f5f5f7; "
-        "border: 1px solid #3a3a3c; border-radius: 6px; padding: 2px 8px; }"
-        "QComboBox:hover { border-color: #0a84ff; }"
-        "QComboBox::drop-down { border: none; background: transparent; }"
-        "QComboBox QAbstractItemView { background-color: #2c2c2e; color: #f5f5f7; "
-        "border: 1px solid #3a3a3c; selection-background-color: #0a84ff; outline: none; }"
-    )
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self._collapsed = False
@@ -121,9 +112,9 @@ class LocalEngineControls(QWidget):
         self.device_combo = self._make_combo(device_choices)
         self.compute_combo = self._make_combo(self.COMPUTE_CHOICES)
 
-        body_layout.addWidget(self._labeled("Model", self.model_combo), stretch=2)
-        body_layout.addWidget(self._labeled("Device", self.device_combo), stretch=1)
-        body_layout.addWidget(self._labeled("Quant", self.compute_combo), stretch=1)
+        body_layout.addWidget(self._labeled("Модель", self.model_combo), stretch=2)
+        body_layout.addWidget(self._labeled("Устройство", self.device_combo), stretch=1)
+        body_layout.addWidget(self._labeled("Точность", self.compute_combo), stretch=1)
         self.body.setMaximumWidth(480)
 
         body_row = QHBoxLayout()
@@ -136,11 +127,10 @@ class LocalEngineControls(QWidget):
         # AI cleanup toggle lives inside this panel; persistence and settings
         # sync stay with TranscriptionTabBase, which exposes it as its own
         # cleanup_check attribute.
-        self.cleanup_check = QCheckBox("AI cleanup")
+        self.cleanup_check = QCheckBox("Обработка текста ИИ")
         self.cleanup_check.setFont(QFont("Segoe UI", 10))
         self.cleanup_check.setToolTip(
-            "Clean up the transcript with an AI model after transcription "
-            "(punctuation, fillers, light ASR fixes)"
+            "Исправлять пунктуацию, слова-паразиты и лёгкие ошибки распознавания с помощью ИИ"
         )
         cleanup_row = QHBoxLayout()
         cleanup_row.setContentsMargins(0, 0, 0, 0)
@@ -155,7 +145,7 @@ class LocalEngineControls(QWidget):
         self.resolved_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         content_layout.addWidget(self.resolved_label)
 
-        self.manage_models_button = QPushButton("Manage models…")
+        self.manage_models_button = QPushButton("Управление моделями…")
         self.manage_models_button.setStyleSheet(self._MANAGE_BUTTON_STYLE)
         self.manage_models_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.manage_models_button.setFlat(True)
@@ -173,7 +163,6 @@ class LocalEngineControls(QWidget):
         combo.addItems(items)
         combo.setMinimumHeight(28)
         combo.setFont(QFont("Segoe UI", 10))
-        combo.setStyleSheet(self._COMBO_STYLE)
         return combo
 
     def _labeled(self, text: str, combo: QComboBox) -> QWidget:

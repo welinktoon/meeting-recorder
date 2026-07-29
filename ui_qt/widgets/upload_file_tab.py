@@ -19,10 +19,15 @@ from ui_qt.widgets.transcription_tab_base import TranscriptionTabBase
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_EXTENSIONS = ('.wav', '.mp3', '.m4a', '.ogg', '.flac', '.wma')
+SUPPORTED_EXTENSIONS = (
+    '.wav', '.mp3', '.m4a', '.ogg', '.flac', '.wma', '.aac',
+    '.webm', '.mp4', '.mkv', '.mov', '.avi', '.m4v',
+)
 AUDIO_FILTERS = (
-    "Audio Files (*.wav *.mp3 *.m4a *.ogg *.flac *.wma);;"
-    "WAV Files (*.wav);;MP3 Files (*.mp3);;All Files (*.*)"
+    "Записи встреч (*.wav *.mp3 *.m4a *.ogg *.flac *.wma *.aac "
+    "*.webm *.mp4 *.mkv *.mov *.avi *.m4v);;"
+    "Записи Телемоста (*.webm *.mp4);;"
+    "Файлы WAV (*.wav);;Файлы MP3 (*.mp3);;Все файлы (*.*)"
 )
 
 
@@ -80,13 +85,13 @@ class DropZoneWidget(QFrame):
 
         layout.addSpacing(6)
 
-        title = QLabel("Drag and drop audio file here")
+        title = QLabel("Перетащите аудиофайл сюда")
         title.setFont(QFont("Segoe UI", 14, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: #f5f5f7; {self._LABEL_RESET}")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("or click to browse")
+        subtitle = QLabel("или нажмите, чтобы выбрать файл")
         subtitle.setFont(QFont("Segoe UI", 11))
         subtitle.setStyleSheet(f"color: #8e8e93; {self._LABEL_RESET}")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -94,7 +99,9 @@ class DropZoneWidget(QFrame):
 
         layout.addSpacing(8)
 
-        formats = QLabel("WAV  ·  MP3  ·  M4A  ·  OGG  ·  FLAC  ·  WMA")
+        formats = QLabel(
+            "WAV · MP3 · M4A · WEBM · MP4 · MKV · MOV · AVI"
+        )
         formats.setFont(QFont("Segoe UI", 10))
         formats.setStyleSheet(f"color: #636366; {self._LABEL_RESET}")
         formats.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -132,7 +139,7 @@ class DropZoneWidget(QFrame):
     def open_file_browser(self):
         """Open the native file dialog for audio file selection."""
         audio_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Audio File", "", AUDIO_FILTERS
+            self, "Выберите запись встречи", "", AUDIO_FILTERS
         )
         if audio_path:
             self.file_selected.emit(audio_path)
@@ -175,13 +182,13 @@ class FileInfoCard(Card):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
 
-        self.remove_btn = Button("Remove")
+        self.remove_btn = Button("Убрать")
         self.remove_btn.clicked.connect(self.remove_clicked.emit)
         btn_layout.addWidget(self.remove_btn)
 
         btn_layout.addStretch()
 
-        self.transcribe_btn = PrimaryButton("Transcribe")
+        self.transcribe_btn = PrimaryButton("Расшифровать")
         self.transcribe_btn.setMinimumWidth(120)
         self.transcribe_btn.clicked.connect(self.transcribe_clicked.emit)
         btn_layout.addWidget(self.transcribe_btn)
@@ -193,24 +200,24 @@ class FileInfoCard(Card):
         self._preview = preview
         self.filename_label.setText(preview.file_name)
         self.details_label.setText(
-            f"Size: {preview.file_size_formatted}    "
-            f"Duration: {preview.duration_formatted}"
+            f"Размер: {preview.file_size_formatted}    "
+            f"Длительность: {preview.duration_formatted}"
         )
-        stereo_mono = "Stereo" if preview.channels == 2 else "Mono"
+        stereo_mono = "Стерео" if preview.channels == 2 else "Моно"
         self.audio_info_label.setText(
             f"{preview.sample_rate} Hz, {stereo_mono}"
         )
 
         if preview.needs_splitting:
             self.chunk_label.setText(
-                f"⚠ Will be split into {preview.estimated_chunks} chunks"
+                f"⚠ Файл будет разделён на частей: {preview.estimated_chunks}"
             )
             self.chunk_label.setStyleSheet(
                 "color: #ff9f0a; font-size: 11px; font-weight: bold;"
             )
             self.chunk_label.show()
         else:
-            self.chunk_label.setText("Will be transcribed in one pass")
+            self.chunk_label.setText("Будет расшифрован за один проход")
             self.chunk_label.setStyleSheet(
                 "color: #30d158; font-size: 11px; font-weight: bold;"
             )
@@ -221,9 +228,9 @@ class FileInfoCard(Card):
         self.transcribe_btn.setEnabled(not active)
         self.remove_btn.setEnabled(not active)
         if active:
-            self.transcribe_btn.setText("Transcribing...")
+            self.transcribe_btn.setText("Расшифровка…")
         else:
-            self.transcribe_btn.setText("Transcribe")
+            self.transcribe_btn.setText("Расшифровать")
 
 
 class UploadFileTab(TranscriptionTabBase):
@@ -232,10 +239,10 @@ class UploadFileTab(TranscriptionTabBase):
     upload_requested = pyqtSignal(str)
 
     CONTENT_OBJECT_NAME = "uploadFileContent"
-    INITIAL_STATUS = "Select an audio file to transcribe"
+    INITIAL_STATUS = "Выберите аудиофайл для расшифровки"
     TRANSCRIPT_PLACEHOLDER = (
-        "Transcription will appear here...\n"
-        "Upload an audio file to begin."
+        "Здесь появится расшифровка.\n"
+        "Выберите аудиофайл."
     )
 
     def __init__(self, parent=None):
@@ -271,15 +278,15 @@ class UploadFileTab(TranscriptionTabBase):
             preview = audio_processor.preview_file(path)
         except FileNotFoundError:
             logger.error(f"File not found: {path}")
-            self.set_status("File not found")
+            self.set_status("Файл не найден")
             return
         except ValueError as e:
             logger.error(f"Invalid audio file: {e}")
-            self.set_status(f"Invalid audio file: {e}")
+            self.set_status(f"Не удалось прочитать аудио: {e}")
             return
         except Exception as e:
             logger.error(f"Error analyzing file: {e}")
-            self.set_status(f"Error: {e}")
+            self.set_status(f"Ошибка: {e}")
             return
 
         self._audio_path = path
@@ -288,18 +295,18 @@ class UploadFileTab(TranscriptionTabBase):
         self.drop_zone.hide()
         self.file_info_card.set_preview(preview)
         self.file_info_card.show()
-        self.set_status("Ready to transcribe")
+        self.set_status("Готово к расшифровке")
         logger.info(f"File loaded: {preview.file_name}")
 
     def _on_transcribe(self):
         if not self._audio_path or not os.path.exists(self._audio_path):
-            self.set_status("File no longer exists — please select again")
+            self.set_status("Файл больше недоступен — выберите его снова")
             self.clear_file()
             return
         self.file_info_card.set_transcribing(True)
         self.model_combo.setEnabled(False)
         self.local_engine.set_busy(True)
-        self.set_status("Transcribing...")
+        self.set_status("Расшифровка…")
         self.upload_requested.emit(self._audio_path)
 
     # ── Public API ─────────────────────────────────────────────────
@@ -320,7 +327,7 @@ class UploadFileTab(TranscriptionTabBase):
         self.drop_zone.show()
         self.model_combo.setEnabled(True)
         self.local_engine.set_busy(False)
-        self.set_status("Select an audio file to transcribe")
+        self.set_status("Выберите аудио или видео")
 
     def set_file(self, audio_path: str):
         """Programmatically set a file (e.g., from File menu redirect)."""

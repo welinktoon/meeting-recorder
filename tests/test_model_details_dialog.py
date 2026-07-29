@@ -30,28 +30,28 @@ class TestModelDetailsDialog(_QtTestCase):
 
     def test_representative_profiles_render_expected_facts(self):
         expected = {
-            "base": ("OpenAI Whisper", "74 million", "Multilingual"),
-            "base.en": ("OpenAI Whisper", "74 million", "English only"),
+            "base": ("OpenAI Whisper", "74 млн", "Многоязычная"),
+            "base.en": ("OpenAI Whisper", "74 млн", "Только английский"),
             "distil-large-v3": (
                 "Distil-Whisper",
-                "756 million",
-                "English only",
+                "756 млн",
+                "Только английский",
             ),
-            "turbo": ("OpenAI Whisper", "809 million", "Multilingual"),
+            "turbo": ("OpenAI Whisper", "809 млн", "Многоязычная"),
         }
         for model_name, (family, parameters, languages) in expected.items():
             with self.subTest(model=model_name):
                 dialog = ModelDetailsDialog(get_model_details(model_name))
                 self.assertTrue(dialog.isModal())
-                self.assertEqual(dialog.fact_labels["Family"].text(), family)
+                self.assertEqual(dialog.fact_labels["Семейство"].text(), family)
                 self.assertEqual(
-                    dialog.fact_labels["Parameters"].text(), parameters
+                    dialog.fact_labels["Параметры"].text(), parameters
                 )
                 self.assertEqual(
-                    dialog.fact_labels["Languages"].text(), languages
+                    dialog.fact_labels["Языки"].text(), languages
                 )
-                self.assertIn("CTranslate2", dialog.fact_labels["Local format"].text())
-                self.assertEqual(dialog.fact_labels["License"].text(), "MIT")
+                self.assertIn("CTranslate2", dialog.fact_labels["Локальный формат"].text())
+                self.assertEqual(dialog.fact_labels["Лицензия"].text(), "MIT")
 
     def test_source_buttons_open_only_the_requested_urls(self):
         details = get_model_details("distil-medium.en")
@@ -80,7 +80,7 @@ class TestModelDetailsDialog(_QtTestCase):
             side_effect=AssertionError("network metadata must not be requested"),
         ) as hf_api:
             dialog = ModelDetailsDialog(get_model_details("tiny"))
-        self.assertEqual(dialog.fact_labels["Origin"].text(), "openai/whisper-tiny")
+        self.assertEqual(dialog.fact_labels["Исходная модель"].text(), "openai/whisper-tiny")
         hf_api.assert_not_called()
 
 

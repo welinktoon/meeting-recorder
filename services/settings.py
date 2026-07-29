@@ -9,6 +9,14 @@ from typing import Dict, Any, Final, List, Tuple, Optional
 from config import config
 
 logger = logging.getLogger(__name__)
+_LEGACY_ENGLISH_CLEANUP_PROMPT = (
+    "You clean up speech-to-text transcripts. "
+    "Fix punctuation and capitalization, remove filler words "
+    "(um, uh, like as filler, you know), and fix obvious ASR errors. "
+    "Do not invent content, do not add information that was not spoken, "
+    "and preserve meaning, tone, and proper nouns. "
+    "Return only the cleaned transcript text with no preamble or quotes."
+)
 
 
 class SettingsKey:
@@ -16,6 +24,8 @@ class SettingsKey:
     HOTKEYS: Final[str] = "hotkeys"
     SELECTED_MODEL: Final[str] = "selected_model"
     AUDIO_INPUT_DEVICE: Final[str] = "audio_input_device"
+    RECORDINGS_FOLDER: Final[str] = "recordings_folder"
+    THEME: Final[str] = "theme"
     CURRENT_WAVEFORM_STYLE: Final[str] = "current_waveform_style"
     WAVEFORM_STYLE_CONFIGS: Final[str] = "waveform_style_configs"
     WINDOW_GEOMETRY: Final[str] = "window_geometry"
@@ -32,10 +42,14 @@ class SettingsKey:
     TRANSCRIPT_CLEANUP_REASONING: Final[str] = "transcript_cleanup_reasoning"
     # JSON list of user-taught rule strings appended to the cleanup prompt
     TRANSCRIPT_CLEANUP_RULES: Final[str] = "transcript_cleanup_rules"
+    CODEX_CLEANUP_ENABLED: Final[str] = "codex_cleanup_enabled"
+    CODEX_CLEANUP_MODE: Final[str] = "codex_cleanup_mode"
+    CODEX_CLEANUP_TRIGGER: Final[str] = "codex_cleanup_trigger"
     MINIMIZE_TRAY: Final[str] = "minimize_tray"
     STREAMING_ENABLED: Final[str] = "streaming_enabled"
     STREAMING_CHUNK_DURATION: Final[str] = "streaming_chunk_duration"
     STREAMING_OVERLAY_FONT_SIZE: Final[str] = "streaming_overlay_font_size"
+    OVERLAY_STATE_VISIBILITY: Final[str] = "overlay_state_visibility"
     # Legacy keys kept for reading/migrating older settings files
     STREAMING_OVERLAY_ENABLED: Final[str] = "streaming_overlay_enabled"
     STREAMING_PASTE_ENABLED: Final[str] = "streaming_paste_enabled"
@@ -49,6 +63,9 @@ class SettingsKey:
     # Recording retention: "keep_all" or "custom" (+ max_saved_recordings count)
     RECORDING_RETENTION_MODE: Final[str] = "recording_retention_mode"
     MAX_SAVED_RECORDINGS: Final[str] = "max_saved_recordings"
+    VIDEO_RECORDING_ENABLED: Final[str] = "video_recording_enabled"
+    VIDEO_RECORDING_FPS: Final[str] = "video_recording_fps"
+    VIDEO_RECORDING_CRF: Final[str] = "video_recording_crf"
     CONFIRM_HISTORY_ENTRY_DELETE: Final[str] = "confirm_history_entry_delete"
 
 
@@ -56,6 +73,36 @@ class RecordingRetentionMode:
     """Values for ``SettingsKey.RECORDING_RETENTION_MODE``."""
     KEEP_ALL: Final[str] = "keep_all"
     CUSTOM: Final[str] = "custom"
+
+
+class OverlayBadge:
+    """Persisted identifiers for the floating status badges."""
+
+    RECORDING: Final[str] = "recording"
+    STREAMING: Final[str] = "streaming"
+    PROCESSING: Final[str] = "processing"
+    TRANSCRIBING: Final[str] = "transcribing"
+    CLEANING: Final[str] = "cleaning"
+    CANCELING: Final[str] = "canceling"
+    STT_ENABLE: Final[str] = "stt_enable"
+    STT_DISABLE: Final[str] = "stt_disable"
+    COPIED: Final[str] = "copied"
+    LARGE_FILE_SPLITTING: Final[str] = "large_file_splitting"
+    LARGE_FILE_PROCESSING: Final[str] = "large_file_processing"
+
+    DEFAULT_VISIBILITY: Final[Dict[str, bool]] = {
+        RECORDING: True,
+        STREAMING: True,
+        PROCESSING: True,
+        TRANSCRIBING: False,
+        CLEANING: False,
+        CANCELING: True,
+        STT_ENABLE: True,
+        STT_DISABLE: True,
+        COPIED: True,
+        LARGE_FILE_SPLITTING: True,
+        LARGE_FILE_PROCESSING: True,
+    }
 
 
 class TranscriptCleanupProvider:
@@ -109,6 +156,42 @@ class TranscriptCleanupReasoning:
     HIGH: Final[str] = "high"
 
     ALL: Final[Tuple[str, ...]] = (OFF, LOW, MEDIUM, HIGH)
+
+
+class CodexCleanupTrigger:
+    """Choose whether Codex runs on demand or after every transcription."""
+
+    MANUAL: Final[str] = "manual"
+    AUTOMATIC: Final[str] = "automatic"
+    ALL: Final[Tuple[str, ...]] = (MANUAL, AUTOMATIC)
+
+
+def resolve_codex_cleanup_enabled(settings: Optional[Dict[str, Any]] = None) -> bool:
+    values = settings if settings is not None else settings_manager.load_all_settings()
+    return bool(values.get(SettingsKey.CODEX_CLEANUP_ENABLED, False))
+
+
+def resolve_codex_cleanup_mode(settings: Optional[Dict[str, Any]] = None) -> str:
+    from services.codex_cleanup import CodexCleanupMode
+
+    values = settings if settings is not None else settings_manager.load_all_settings()
+    mode = values.get(SettingsKey.CODEX_CLEANUP_MODE, CodexCleanupMode.CORRECT)
+    return mode if mode in CodexCleanupMode.ALL else CodexCleanupMode.CORRECT
+
+
+def resolve_codex_cleanup_trigger(
+    settings: Optional[Dict[str, Any]] = None,
+) -> str:
+    values = settings if settings is not None else settings_manager.load_all_settings()
+    trigger = values.get(
+        SettingsKey.CODEX_CLEANUP_TRIGGER,
+        CodexCleanupTrigger.MANUAL,
+    )
+    return (
+        trigger
+        if trigger in CodexCleanupTrigger.ALL
+        else CodexCleanupTrigger.MANUAL
+    )
 
 
 class HuggingFaceAccessPolicy:
@@ -444,6 +527,21 @@ def resolve_streaming_overlay_font_size(
     return max(10, min(48, size))
 
 
+def resolve_overlay_state_visibility(
+    settings: Optional[Dict[str, Any]] = None,
+) -> Dict[str, bool]:
+    """Return visibility choices for every floating status badge."""
+    if settings is None:
+        settings = settings_manager.load_all_settings()
+    raw = settings.get(SettingsKey.OVERLAY_STATE_VISIBILITY, {})
+    result = dict(OverlayBadge.DEFAULT_VISIBILITY)
+    if isinstance(raw, dict):
+        for state in result:
+            if state in raw:
+                result[state] = bool(raw[state])
+    return result
+
+
 def resolve_transcript_cleanup_prompt(
     settings: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -462,7 +560,10 @@ def resolve_transcript_cleanup_prompt(
 
     prompt = settings.get(SettingsKey.TRANSCRIPT_CLEANUP_PROMPT)
     if isinstance(prompt, str) and prompt.strip():
-        return prompt.strip()
+        cleaned = prompt.strip()
+        if cleaned == _LEGACY_ENGLISH_CLEANUP_PROMPT:
+            return config.TRANSCRIPT_CLEANUP_PROMPT
+        return cleaned
     return config.TRANSCRIPT_CLEANUP_PROMPT
 
 

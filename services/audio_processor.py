@@ -19,6 +19,10 @@ INT16_MIN = -32768
 INT16_MAX = 32767
 
 
+class MediaValidationError(ValueError):
+    """A reader-facing error for an unusable meeting recording."""
+
+
 @dataclass
 class AudioFilePreview:
     """Preview information for an audio file."""
@@ -79,6 +83,54 @@ class AudioProcessor:
 
         return needs_splitting, file_size_mb
 
+    def validate_audio_source(self, audio_path: str) -> Dict[str, Any]:
+        """Quickly verify that a media file contains readable audio.
+
+        This intentionally decodes only the first audio frame, so long
+        Telemost WebM recordings can be checked without loading the whole
+        meeting into memory.
+        """
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(
+                f"Файл не найден: {audio_path}"
+            )
+
+        import av
+
+        try:
+            with av.open(audio_path) as container:
+                if not container.streams.audio:
+                    raise MediaValidationError(
+                        "В записи нет аудиодорожки — расшифровывать нечего"
+                    )
+                stream = container.streams.audio[0]
+                first_frame = next(container.decode(audio=0), None)
+                if first_frame is None:
+                    raise MediaValidationError(
+                        "В записи есть аудиодорожка, но в ней нет читаемого звука"
+                    )
+                duration = (
+                    float(container.duration) / 1_000_000
+                    if container.duration
+                    else float(stream.duration * stream.time_base)
+                    if stream.duration is not None and stream.time_base
+                    else 0.0
+                )
+                return {
+                    "duration_seconds": duration,
+                    "sample_rate": stream.rate or first_frame.sample_rate or 0,
+                    "channels": stream.codec_context.channels or 0,
+                    "codec": stream.codec_context.name or "",
+                    "format": container.format.name or "",
+                }
+        except (FileNotFoundError, MediaValidationError):
+            raise
+        except Exception as exc:
+            raise MediaValidationError(
+                "Файл повреждён или запись не была корректно завершена. "
+                "Не удалось прочитать аудиодорожку"
+            ) from exc
+
     def preview_file(self, audio_path: str) -> AudioFilePreview:
         """Analyze an audio file and return preview information.
 
@@ -102,14 +154,16 @@ class AudioProcessor:
         file_size_bytes = os.path.getsize(audio_path)
         file_size_mb = file_size_bytes / (1024 * 1024)
 
-        # Load audio to get duration and metadata
+        # Probe only the first frame. A full decode here can consume gigabytes
+        # of memory for a long, highly compressed Telemost WebM recording.
         try:
-            audio_data, sample_rate, channels = self._load_audio_metadata(audio_path)
+            media = self.validate_audio_source(audio_path)
         except Exception as e:
             raise ValueError(f"Failed to read audio file: {e}")
 
-        # Calculate duration
-        duration_seconds = len(audio_data) / sample_rate
+        duration_seconds = float(media["duration_seconds"])
+        sample_rate = int(media["sample_rate"])
+        channels = int(media["channels"])
 
         # Check if splitting is needed
         needs_splitting = file_size_mb > config.MAX_FILE_SIZE_MB
@@ -117,22 +171,16 @@ class AudioProcessor:
         # Estimate chunks
         chunk_durations = []
         if needs_splitting:
-            # Use the same logic as _find_split_points to estimate chunks
-            split_points = self._find_split_points(audio_data, sample_rate)
-
-            if not split_points:
-                # Fallback to time-based splits
-                split_points = self._generate_time_based_splits(len(audio_data), sample_rate)
-
-            # Calculate chunk durations from split points
-            start_idx = 0
-            for end_idx in split_points + [len(audio_data)]:
-                chunk_samples = end_idx - start_idx
-                chunk_duration = chunk_samples / sample_rate
-                chunk_durations.append(chunk_duration)
-                start_idx = end_idx
-
-            estimated_chunks = len(chunk_durations)
+            estimated_chunks = max(
+                1,
+                int(np.ceil(file_size_mb / config.MAX_FILE_SIZE_MB)),
+            )
+            chunk_duration = (
+                duration_seconds / estimated_chunks
+                if duration_seconds
+                else 0.0
+            )
+            chunk_durations = [chunk_duration] * estimated_chunks
         else:
             estimated_chunks = 1
             chunk_durations = [duration_seconds]
@@ -167,13 +215,13 @@ class AudioProcessor:
         """
         try:
             if progress_callback:
-                progress_callback("Loading audio file...")
+                progress_callback("Загрузка аудио…")
 
             # Load audio data
             audio_data, sample_rate = self._load_audio_data(audio_path)
 
             if progress_callback:
-                progress_callback("Analyzing audio for optimal split points...")
+                progress_callback("Анализ аудио…")
 
             # Find optimal split points using silence detection
             split_points = self._find_split_points(audio_data, sample_rate)
@@ -182,11 +230,13 @@ class AudioProcessor:
                 # Fallback to time-based splitting if no silence found
                 logger.warning("No suitable silence points found, using time-based splitting")
                 if progress_callback:
-                    progress_callback("Generating time-based splits...")
+                    progress_callback("Подготовка частей…")
                 split_points = self._generate_time_based_splits(len(audio_data), sample_rate)
 
             if progress_callback:
-                progress_callback(f"Creating {len(split_points)} audio chunks...")
+                progress_callback(
+                    f"Подготовка частей: {len(split_points)}…"
+                )
 
             # Create chunks
             chunk_files = self._create_chunks(audio_data, sample_rate, split_points, audio_path)

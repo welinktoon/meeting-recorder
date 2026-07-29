@@ -4,9 +4,12 @@ Manages the main window, overlay, and dialogs.
 Bridges between UI and application logic.
 """
 import logging
+import subprocess
+import sys
+import threading
 from typing import Callable, List, Optional
-from PyQt6.QtCore import QTimer, pyqtSignal, QObject
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from config import config
 from services.hotkey_manager import format_hotkey_display
@@ -18,6 +21,13 @@ from ui_qt.dialogs.settings_dialog import SettingsDialog
 from ui_qt.dialogs.hotkey_dialog import HotkeyDialog
 from ui_qt.widgets import QuickRecordTab, UploadFileTab, TabbedContentWidget
 from services.settings import SettingsKey
+from services.update_service import (
+    UpdateCancelled,
+    UpdateInfo,
+    check_for_update,
+    download_update,
+)
+from version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +43,9 @@ class UIController(QObject):
     transcription_received = pyqtSignal(str, object)  # fixed text, optional raw
     status_changed = pyqtSignal(str)
     audio_levels_updated = pyqtSignal(list)
+    _update_check_finished = pyqtSignal(object, object, bool)
+    _update_download_progress = pyqtSignal(int)
+    _update_download_finished = pyqtSignal(object, object)
 
     def __init__(self):
         """Initialize UI controller."""
@@ -65,10 +78,15 @@ class UIController(QObject):
         self.on_model_download_requested: Optional[Callable] = None  # Model Manager: fetch a model
         self.on_model_delete_requested: Optional[Callable] = None  # Model Manager: delete cached files
         self.on_dictation_transcribe: Optional[Callable] = None  # Settings dialog: transcribe a dictated clip
+        self.on_codex_improve: Optional[Callable] = None
         self.get_loaded_local_model: Optional[Callable] = None  # Provider: currently loaded model name
 
         # Non-modal Model Manager dialog (single instance, created lazily)
         self._model_manager_dialog = None
+        self._settings_page = None
+        self._update_check_in_progress = False
+        self._update_download_dialog = None
+        self._update_download_cancel = None
 
         # Timer to hide overlay after cancel animation completes
         self.cancel_animation_timer = QTimer()
@@ -76,6 +94,9 @@ class UIController(QObject):
         self.cancel_animation_timer.timeout.connect(self._on_cancel_animation_finished)
 
         self._setup_connections()
+        self._update_check_finished.connect(self._on_update_check_finished)
+        self._update_download_progress.connect(self._on_update_download_progress)
+        self._update_download_finished.connect(self._on_update_download_finished)
 
     def _setup_connections(self):
         """Setup signal connections between UI components."""
@@ -85,11 +106,15 @@ class UIController(QObject):
         self.main_window.model_changed.connect(self._on_model_changed)
         self.main_window.whisper_engine_changed.connect(self._on_whisper_engine_changed)
         self.main_window.settings_requested.connect(self.open_settings_dialog)
+        self.main_window.devices_requested.connect(self.open_devices_page)
         self.main_window.model_manager_requested.connect(self.open_model_manager_dialog)
         self.main_window.hotkeys_requested.connect(self.open_hotkey_dialog)
         self.main_window.about_requested.connect(self.show_about_dialog)
         self.main_window.retranscribe_requested.connect(self._on_retranscribe_requested)
         self.main_window.upload_file_requested.connect(self._on_upload_file_transcribe)
+        self.main_window.codex_improve_requested.connect(
+            self._on_codex_improve_requested
+        )
 
         # Set up the copied animation callback
         self.main_window.on_show_copied_animation = self.show_copied_animation
@@ -193,6 +218,7 @@ class UIController(QObject):
     def _apply_audio_levels_to_overlay(self, levels: List[float]):
         """Forward audio level updates to the waveform overlay."""
         self.overlay.update_audio_levels(levels)
+        self.main_window.voice_notes_workspace.waveform.set_levels(levels)
 
     def start_recording(self):
         """Start recording."""
@@ -200,10 +226,12 @@ class UIController(QObject):
         self._transcription_source_tab = TabbedContentWidget.TAB_QUICK_RECORD
         logger.info("Recording started")
 
-        # Sync main window state (important for hotkey-triggered recordings)
-        if not self.main_window.is_recording:
-            self.main_window.is_recording = True
-            self.main_window._update_recording_state()
+        # Always refresh every recording surface.  A click routed through the
+        # hidden legacy QuickRecordTab updates ``main_window.is_recording``
+        # before this callback runs, but the visible meeting workspace still
+        # needs its Start/Stop controls updated.
+        self.main_window.is_recording = True
+        self.main_window._update_recording_state()
 
         if self.on_record_start:
             self.on_record_start()
@@ -215,11 +243,11 @@ class UIController(QObject):
         self.is_recording = False
         logger.info("Recording stopped")
 
-        # Sync main window state (important for hotkey-triggered recordings)
-        if self.main_window.is_recording:
-            self.main_window.is_recording = False
-            self.main_window._update_recording_state()
-            logger.info("Main window recording state updated")
+        # Keep the visible workspace in sync even when the hidden legacy tab
+        # has already flipped the shared flag.
+        self.main_window.is_recording = False
+        self.main_window._update_recording_state()
+        logger.info("Main window recording state updated")
 
         if self.on_record_stop:
             self.on_record_stop()
@@ -252,6 +280,12 @@ class UIController(QObject):
             raw: Optional unprocessed ASR text when distinct from ``text``.
         """
         self.transcription_received.emit(text, raw)
+
+    def set_transcription_state(
+        self, state: str, audio_path: str = "", message: str = ""
+    ):
+        """Update the meeting transcription action without opening a dialog."""
+        self.main_window.set_transcription_state(state, audio_path, message)
 
     def set_device_info(self, device_info: str):
         """Set the persistent device info display (e.g., 'cuda (float16)').
@@ -338,7 +372,9 @@ class UIController(QObject):
             self._dismiss_streaming_preview_for_waveform(self.overlay.STATE_TRANSCRIBING)
         elif state is OverlayState.CLEANING:
             self.tray_manager.set_recording(False)
-            self._dismiss_streaming_preview_for_waveform(self.overlay.STATE_CLEANING)
+            self._dismiss_streaming_preview_for_waveform(
+                self.overlay.STATE_CLEANING
+            )
         elif state is OverlayState.STT_ENABLED:
             self._show_or_set_overlay(self.overlay.STATE_STT_ENABLE)
         elif state is OverlayState.STT_DISABLED:
@@ -451,40 +487,272 @@ class UIController(QObject):
         self.main_window.hide()
 
     def open_settings_dialog(self, focus_hf_policy: bool = False):
-        """Open the settings dialog.
+        """Open settings inside the main window.
 
         Args:
             focus_hf_policy: When True, open directly to the Advanced tab with
                 the Hugging Face download-policy control focused (used by the
                 consent dialog's "Open Settings" action).
         """
-        dialog = SettingsDialog(self.main_window)
-        dialog.on_dictation_transcribe = self.on_dictation_transcribe
+        dialog = self._ensure_settings_page()
+        dialog._load_settings()
         if focus_hf_policy:
             dialog.focus_hf_policy()
         else:
-            dialog.tabs.setCurrentIndex(0)  # Default to general
+            dialog.tabs.setCurrentIndex(dialog._application_tab_index)
+        self.main_window.restore_from_tray()
+        self.main_window.voice_notes_workspace.set_embedded_page(
+            "settings", dialog
+        )
 
-        # Connect settings changed signal
-        def on_settings_changed(settings: dict):
-            self.overlay.refresh_streaming_font_size()
-            # Keep main-UI AI cleanup checkboxes in sync with Settings.
-            self.refresh_cleanup_controls()
-            if settings.get('_audio_device_changed', False):
-                if self.on_audio_device_changed:
-                    new_device_id = settings.get(SettingsKey.AUDIO_INPUT_DEVICE)
-                    self.on_audio_device_changed(new_device_id)
-            if settings.get('_streaming_settings_changed', False):
-                if self.on_streaming_settings_changed:
-                    self.on_streaming_settings_changed()
-            if settings.get('_hf_policy_changed', False):
-                if self.on_hf_policy_changed:
-                    self.on_hf_policy_changed(
-                        settings.get(SettingsKey.HF_ACCESS_POLICY)
-                    )
+    def open_devices_page(self):
+        """Open the audio-device settings inside the main window."""
+        dialog = self._ensure_settings_page()
+        dialog._load_settings()
+        dialog.tabs.setCurrentIndex(dialog._recording_tab_index)
+        self.main_window.restore_from_tray()
+        self.main_window.voice_notes_workspace.set_embedded_page(
+            "devices", dialog
+        )
 
-        dialog.settings_changed.connect(on_settings_changed)
+    def _ensure_settings_page(self):
+        if self._settings_page is not None:
+            return self._settings_page
+
+        dialog = SettingsDialog(self.main_window)
+        dialog.on_dictation_transcribe = self.on_dictation_transcribe
+        dialog.set_embedded_mode(True)
+        dialog.close_requested.connect(
+            lambda: self.main_window.voice_notes_workspace.show_page("records")
+        )
+        dialog.settings_changed.connect(self._on_embedded_settings_changed)
+        dialog.check_updates_requested.connect(
+            lambda: self.check_for_updates(interactive=True)
+        )
+        dialog.tabs.currentChanged.connect(self._sync_settings_sidebar)
+        self._settings_page = dialog
+        workspace = self.main_window.voice_notes_workspace
+        workspace.set_embedded_page("settings", dialog, activate=False)
+        workspace.set_embedded_page("devices", dialog, activate=False)
+        return dialog
+
+    def schedule_startup_update_check(self):
+        """Check GitHub after startup without delaying the first window."""
+        QTimer.singleShot(
+            2500,
+            lambda: self.check_for_updates(interactive=False),
+        )
+
+    def check_for_updates(self, interactive: bool = True):
+        """Discover a stable GitHub Release on a background thread."""
+        if self._update_check_in_progress:
+            return
+        self._update_check_in_progress = True
+        if self._settings_page is not None:
+            self._settings_page.set_update_status(
+                "Проверяем обновления…",
+                busy=True,
+            )
+
+        def worker():
+            update = None
+            error = None
+            try:
+                update = check_for_update()
+            except Exception as exc:
+                error = exc
+            self._update_check_finished.emit(update, error, interactive)
+
+        threading.Thread(
+            target=worker,
+            name="update-check",
+            daemon=True,
+        ).start()
+
+    def _on_update_check_finished(self, update, error, interactive: bool):
+        self._update_check_in_progress = False
+        if error is not None:
+            logger.warning("Update check failed: %s", error)
+            if self._settings_page is not None:
+                self._settings_page.set_update_status(str(error), busy=False)
+            if interactive:
+                QMessageBox.warning(
+                    self.main_window,
+                    "Не удалось проверить обновления",
+                    str(error),
+                )
+            return
+
+        if update is None:
+            message = f"Установлена актуальная версия {__version__}."
+            if self._settings_page is not None:
+                self._settings_page.set_update_status(message, busy=False)
+            if interactive:
+                QMessageBox.information(
+                    self.main_window,
+                    "Обновления",
+                    message,
+                )
+            return
+
+        if self._settings_page is not None:
+            self._settings_page.set_update_status(
+                f"Доступна версия {update.version}.",
+                busy=False,
+            )
+        self._show_update_prompt(update)
+
+    def _show_update_prompt(self, update: UpdateInfo):
+        notes = update.notes.strip()
+        if len(notes) > 700:
+            notes = f"{notes[:697].rstrip()}…"
+        details = (
+            f"Установлена версия {__version__}.\n"
+            f"Доступна версия {update.version}."
+        )
+        if notes:
+            details = f"{details}\n\nЧто нового:\n{notes}"
+
+        dialog = QMessageBox(self.main_window)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle("Доступно обновление")
+        dialog.setText(details)
+        update_button = dialog.addButton(
+            "Обновить",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        dialog.addButton(
+            "Позже",
+            QMessageBox.ButtonRole.RejectRole,
+        )
         dialog.exec()
+        if dialog.clickedButton() is update_button:
+            self._download_and_install_update(update)
+
+    def _download_and_install_update(self, update: UpdateInfo):
+        if sys.platform != "win32":
+            QMessageBox.warning(
+                self.main_window,
+                "Обновление недоступно",
+                "Автоматическая установка поддерживается только в Windows.",
+            )
+            return
+
+        self._update_download_cancel = threading.Event()
+        dialog = QProgressDialog(
+            "Скачиваем и проверяем установщик…",
+            "Отмена",
+            0,
+            100,
+            self.main_window,
+        )
+        dialog.setWindowTitle("Обновление")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.canceled.connect(self._update_download_cancel.set)
+        dialog.setValue(0)
+        dialog.show()
+        self._update_download_dialog = dialog
+
+        def worker():
+            target = None
+            error = None
+            try:
+                target = download_update(
+                    update,
+                    progress=self._update_download_progress.emit,
+                    is_cancelled=self._update_download_cancel.is_set,
+                )
+            except Exception as exc:
+                error = exc
+            self._update_download_finished.emit(target, error)
+
+        threading.Thread(
+            target=worker,
+            name="update-download",
+            daemon=True,
+        ).start()
+
+    def _on_update_download_progress(self, value: int):
+        if self._update_download_dialog is not None:
+            self._update_download_dialog.setValue(value)
+
+    def _on_update_download_finished(self, installer, error):
+        if self._update_download_dialog is not None:
+            self._update_download_dialog.close()
+            self._update_download_dialog.deleteLater()
+            self._update_download_dialog = None
+
+        if error is not None:
+            if isinstance(error, UpdateCancelled):
+                return
+            logger.error("Update download failed: %s", error)
+            QMessageBox.warning(
+                self.main_window,
+                "Не удалось скачать обновление",
+                str(error),
+            )
+            return
+
+        try:
+            subprocess.Popen(
+                [
+                    str(installer),
+                    "/VERYSILENT",
+                    "/SUPPRESSMSGBOXES",
+                    "/CLOSEAPPLICATIONS",
+                    "/RESTARTAPPLICATIONS",
+                    "/NORESTART",
+                ],
+                close_fds=True,
+            )
+        except OSError as exc:
+            QMessageBox.warning(
+                self.main_window,
+                "Не удалось запустить установщик",
+                str(exc),
+            )
+            return
+        QApplication.quit()
+
+    def _sync_settings_sidebar(self, tab_index: int):
+        """Keep the left navigation aligned with the visible settings tab."""
+        if self._settings_page is None:
+            return
+        workspace = self.main_window.voice_notes_workspace
+        if workspace.content_stack.currentWidget() is not self._settings_page:
+            return
+        workspace.show_page(
+            "devices"
+            if tab_index == self._settings_page._recording_tab_index
+            else "settings"
+        )
+
+    def _on_embedded_settings_changed(self, settings: dict):
+        self.overlay.refresh_streaming_font_size()
+        self.overlay.set_state(self.overlay.current_state)
+        self.refresh_cleanup_controls()
+        workspace = self.main_window.voice_notes_workspace
+        if not workspace.recording:
+            workspace.screen.setChecked(bool(settings.get(
+                SettingsKey.VIDEO_RECORDING_ENABLED, True
+            )))
+        # A newly selected recordings folder may already contain meetings.
+        # Re-scan it immediately instead of requiring an application restart.
+        self.main_window.refresh_history()
+        if settings.get('_audio_device_changed', False):
+            if self.on_audio_device_changed:
+                new_device_id = settings.get(SettingsKey.AUDIO_INPUT_DEVICE)
+                self.on_audio_device_changed(new_device_id)
+        if settings.get('_streaming_settings_changed', False):
+            if self.on_streaming_settings_changed:
+                self.on_streaming_settings_changed()
+        if settings.get('_hf_policy_changed', False):
+            if self.on_hf_policy_changed:
+                self.on_hf_policy_changed(
+                    settings.get(SettingsKey.HF_ACCESS_POLICY)
+                )
 
     def refresh_local_engine_controls(self):
         """Re-sync the inline local-engine combos with the persisted settings.
@@ -522,7 +790,7 @@ class UIController(QObject):
         return dialog.result_action
 
     def open_model_manager_dialog(self):
-        """Show the non-modal Model Manager (single instance, re-raised)."""
+        """Show the model manager inside the main window."""
         from ui_qt.dialogs.model_manager_dialog import ModelManagerDialog
 
         if self._model_manager_dialog is None:
@@ -533,12 +801,17 @@ class UIController(QObject):
             dialog.on_download_requested = self.on_model_download_requested
             dialog.on_delete_requested = self.on_model_delete_requested
             dialog.on_set_active_requested = self._on_manager_set_active
+            dialog.set_embedded_mode(True)
+            dialog.close_requested.connect(
+                lambda: self.main_window.voice_notes_workspace.show_page("records")
+            )
             self._model_manager_dialog = dialog
 
         self._model_manager_dialog.refresh()
-        self._model_manager_dialog.show()
-        self._model_manager_dialog.raise_()
-        self._model_manager_dialog.activateWindow()
+        self.main_window.restore_from_tray()
+        self.main_window.voice_notes_workspace.set_embedded_page(
+            "models", self._model_manager_dialog
+        )
 
     def _on_manager_set_active(self, model_name: str):
         """Persist a Model Manager 'Set Active' choice and reload the engine.
@@ -649,19 +922,17 @@ class UIController(QObject):
         """Show the about dialog."""
         QMessageBox.about(
             self.main_window,
-            "About OpenWhisper",
-            "<p><b>OpenWhisper - Speech-to-Text Application</b></p>"
-            "<p>Record audio and turn it into text. Works offline with local "
-            "Whisper or online with OpenAI.</p>"
-            "<p>Features:<br>"
-            "&bull; Local or cloud transcription<br>"
-            "&bull; Global hotkeys (press * to record)<br>"
-            "&bull; Cool waveform visualizations<br>"
-            "&bull; Auto-pastes text for you<br>"
-            "&bull; Runs in the background</p>"
-            '<p>Website: <a href="https://openwhisper.fiorilabs.tech/">'
-            "openwhisper.fiorilabs.tech</a><br>"
-            "Open source and free to use.</p>"
+            "О приложении",
+            "<p><b>Запись встреч</b></p>"
+            f"<p>Версия {__version__} · welinkton</p>"
+            "<p>Локальное приложение для записи звука и расшифровки речи.</p>"
+            "<p>Возможности:<br>"
+            "&bull; Запись микрофона и звука компьютера<br>"
+            "&bull; Локальная расшифровка без подписки<br>"
+            "&bull; Горячие клавиши<br>"
+            "&bull; Сохранение записей и текста в выбранной папке<br>"
+            "&bull; Работа в фоновом режиме</p>"
+            "<p>Бесплатно. Основные данные хранятся на вашем компьютере.</p>"
         )
 
     def get_model_value(self) -> str:
@@ -672,9 +943,34 @@ class UIController(QObject):
         """Refresh the history sidebar."""
         self.main_window.refresh_history()
 
+    def show_codex_improvement_error(self, message: str):
+        """Show a durable explanation when a manual Codex run fails."""
+        QMessageBox.warning(
+            self.main_window,
+            "Не удалось улучшить расшифровку",
+            (
+                f"{message}\n\n"
+                "Обычная расшифровка сохранена без изменений."
+            ),
+        )
+
     def _on_retranscribe_requested(self, audio_path: str):
         """Handle re-transcription request from main window signal."""
         self._request_retranscription(audio_path)
+
+    def _on_codex_improve_requested(
+        self,
+        audio_path: str,
+        transcript: str,
+        history_entry_id: str,
+    ):
+        """Run Codex on an existing transcript without rerunning Whisper."""
+        if self.on_codex_improve:
+            self.on_codex_improve(
+                audio_path,
+                transcript,
+                history_entry_id,
+            )
 
     def _request_retranscription(self, audio_path: str):
         """Request re-transcription for an existing audio file."""

@@ -4,15 +4,37 @@ Handles application initialization and event loop management.
 """
 import logging
 import sys
+from pathlib import Path
 from typing import Optional
 from PyQt6.QtWidgets import QApplication, QMainWindow, QStyleFactory
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 
 from ui_qt.utils.theme_manager import ThemeManager
 from ui_qt.utils.tooltip_filter import RoundedTooltipFilter, SnappyTooltipStyle
+from ui_qt.utils.russian_localizer import RussianLocalizer
+from version import APP_PUBLISHER, __version__
 
-APP_NAME = "OpenWhisper"
+APP_NAME = "Запись встреч"
+APP_ICON = (
+    Path(__file__).resolve().parent
+    / "assets"
+    / "meeting-recorder-logo.ico"
+)
+
+
+def _set_windows_app_identity() -> None:
+    """Give the taskbar our logo instead of grouping under pythonw.exe."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "MeetingRecorder.Local.1"
+        )
+    except Exception:
+        logging.debug("Could not set Windows AppUserModelID", exc_info=True)
 
 
 def _override_macos_bundle_name(name: str) -> None:
@@ -71,16 +93,21 @@ class QtApplication:
         # in the menu bar and About panel.
         QApplication.setApplicationName(APP_NAME)
         QApplication.setApplicationDisplayName(APP_NAME)
-        QApplication.setOrganizationName(APP_NAME)
+        QApplication.setApplicationVersion(__version__)
+        QApplication.setOrganizationName(APP_PUBLISHER)
+        _set_windows_app_identity()
         _override_macos_bundle_name(APP_NAME)
 
         self.app = QApplication.instance()
         if self.app is None:
             self.app = QApplication([])
+        self.app.setWindowIcon(QIcon(str(APP_ICON)))
 
         self.theme_manager = ThemeManager()
         self._tooltip_filter = RoundedTooltipFilter(self.app)
         self.app.installEventFilter(self._tooltip_filter)
+        self._russian_localizer = RussianLocalizer(self.app)
+        self.app.installEventFilter(self._russian_localizer)
         self._setup_tooltip_style()
         self._setup_fonts()
         self._apply_theme()

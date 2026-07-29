@@ -104,7 +104,7 @@ class BaseWaveformStyle(ABC):
         self._canceling_start_time = start_time
 
     @abstractmethod
-    def draw_recording_state(self, painter: QPainter, rect: QRect, message: str = "Recording..."):
+    def draw_recording_state(self, painter: QPainter, rect: QRect, message: str = "Запись"):
         """Draw the recording state visualization.
 
         Args:
@@ -115,7 +115,7 @@ class BaseWaveformStyle(ABC):
         pass
 
     @abstractmethod
-    def draw_processing_state(self, painter: QPainter, rect: QRect, message: str = "Processing..."):
+    def draw_processing_state(self, painter: QPainter, rect: QRect, message: str = "Подготовка"):
         """Draw the processing state visualization.
 
         Args:
@@ -126,7 +126,7 @@ class BaseWaveformStyle(ABC):
         pass
 
     @abstractmethod
-    def draw_transcribing_state(self, painter: QPainter, rect: QRect, message: str = "Transcribing..."):
+    def draw_transcribing_state(self, painter: QPainter, rect: QRect, message: str = "Расшифровка"):
         """Draw the transcribing state visualization.
 
         Args:
@@ -136,7 +136,7 @@ class BaseWaveformStyle(ABC):
         """
         pass
 
-    def draw_canceling_state(self, painter: QPainter, rect: QRect, message: str = "Canceled"):
+    def draw_canceling_state(self, painter: QPainter, rect: QRect, message: str = "Отменено"):
         """Draw a universal canceling animation with shrinking red X.
 
         Args:
@@ -180,7 +180,7 @@ class BaseWaveformStyle(ABC):
         text_rect = QRect(0, rect.height() - 25, rect.width(), 20)
         painter.drawText(text_rect, 0x0004 | 0x0080, message)  # AlignCenter | AlignBottom
 
-    def draw_stt_enable_state(self, painter: QPainter, rect: QRect, message: str = "STT Enabled"):
+    def draw_stt_enable_state(self, painter: QPainter, rect: QRect, message: str = "Включено"):
         """Draw STT enable state with green checkmark animation.
 
         Args:
@@ -208,7 +208,7 @@ class BaseWaveformStyle(ABC):
         text_rect = QRect(0, rect.height() - 25, rect.width(), 20)
         painter.drawText(text_rect, 0x0004 | 0x0080, message)
 
-    def draw_stt_disable_state(self, painter: QPainter, rect: QRect, message: str = "STT Disabled"):
+    def draw_stt_disable_state(self, painter: QPainter, rect: QRect, message: str = "Выключено"):
         """Draw STT disable state with red X animation.
 
         Args:

@@ -16,6 +16,12 @@ python-dotenv>=1.0.0
 PyQt6>=6.0.0
 scipy>=1.10.0
 sqlalchemy>=2.0.0
+# Optional local screen capture for a voice note. Captures pixels locally and
+# encodes an MP4 through PyAV (already pulled in by faster-whisper).
+mss>=10.0.0
+# Windows WASAPI loopback for capturing the other participants in a meeting.
+soundcard>=0.4.3 ; sys_platform == "win32"
+qtawesome>=1.4.2
 # Note: faster-whisper automatically installs transitive dependencies:
 #   - av (audio/video processing)
 #   - ctranslate2 (inference engine)

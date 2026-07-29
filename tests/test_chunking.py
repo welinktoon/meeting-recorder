@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def test_chunking():
+def run_chunking_check():
     """Test the chunking functionality with our generated test file."""
     test_file = "test_chunking_audio.wav"
 
@@ -82,6 +82,15 @@ def test_chunking():
         return False
 
 
+def test_chunking():
+    """Run the manual media test only when its large fixture is available."""
+    if not os.path.exists("test_chunking_audio.wav"):
+        import pytest
+
+        pytest.skip("manual chunking audio fixture is not present")
+    assert run_chunking_check()
+
+
 if __name__ == "__main__":
-    success = test_chunking()
+    success = run_chunking_check()
     sys.exit(0 if success else 1)

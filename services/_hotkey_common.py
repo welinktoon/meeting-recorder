@@ -122,7 +122,7 @@ def notify_stt_toggle(
         on_status_update_auto_hide: Preferred auto-hiding status callback.
         on_status_update: Plain status callback fallback.
     """
-    status = "STT Enabled" if program_enabled else "STT Disabled"
+    status = "Распознавание включено" if program_enabled else "Распознавание выключено"
     if on_status_update_auto_hide:
         on_status_update_auto_hide(status)
     elif on_status_update:

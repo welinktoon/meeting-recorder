@@ -55,8 +55,8 @@ class TabbedContentWidget(QWidget):
         self.tab_bar.setDrawBase(False)  # Don't draw base line
         self.tab_bar.setExpanding(False)  # Don't expand tabs to fill width
 
-        self.tab_bar.addTab("Quick Record")
-        self.tab_bar.addTab("Upload File")
+        self.tab_bar.addTab("Быстрая запись")
+        self.tab_bar.addTab("Открыть файл")
 
         # Center the tab bar horizontally
         tab_container = QWidget()

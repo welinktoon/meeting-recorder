@@ -138,9 +138,9 @@ class TestHistoryEntryDialog(_QtTestCase):
             file_size=1536,
         )
         dialog = HistoryEntryDialog(entry)
-        self.assertEqual(dialog.fact_labels["Audio duration"].text(), "1m 5s")
-        self.assertEqual(dialog.fact_labels["Transcription time"].text(), "2.5s")
-        self.assertEqual(dialog.fact_labels["File size"].text(), "1.5 KB")
+        self.assertEqual(dialog.fact_labels["Длительность аудио"].text(), "1 мин 5 с")
+        self.assertEqual(dialog.fact_labels["Время расшифровки"].text(), "2.5 с")
+        self.assertEqual(dialog.fact_labels["Размер файла"].text(), "1.5 KB")
 
 
 if __name__ == "__main__":

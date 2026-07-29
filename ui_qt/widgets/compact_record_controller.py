@@ -24,7 +24,7 @@ class CompactRecordController(QWidget):
         layout.setSpacing(14)
         layout.addStretch()
 
-        self.status_label = QLabel("Ready to record")
+        self.status_label = QLabel("Готово к записи")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setFont(QFont("Segoe UI", 13))
@@ -34,11 +34,11 @@ class CompactRecordController(QWidget):
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(8)
 
-        self.record_button = SuccessButton("Record")
-        self.stop_button = DangerButton("Stop")
-        self.cancel_button = WarningButton("Cancel")
+        self.record_button = SuccessButton("Запись")
+        self.stop_button = DangerButton("Стоп")
+        self.cancel_button = WarningButton("Отмена")
         for button in (self.record_button, self.stop_button, self.cancel_button):
-            button.set_base_minimum_size(88, 44)
+            button.set_base_minimum_size(80, 44)
             button_layout.addWidget(button, stretch=1)
 
         self.stop_button.set_active(False)
@@ -58,7 +58,7 @@ class CompactRecordController(QWidget):
             recording: Whether recording is active.
         """
         self.record_button.set_active(not recording)
-        self.record_button.setText("Recording" if recording else "Record")
+        self.record_button.setText("Идёт…" if recording else "Запись")
         self.stop_button.set_active(recording)
         self.cancel_button.set_active(recording)
 

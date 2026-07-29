@@ -4,17 +4,20 @@ Main application window with recording controls and transcription display.
 """
 import logging
 import sys
+from pathlib import Path
 from typing import Optional, Callable
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QTextEdit, QFrame, QPushButton
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QEvent, QPropertyAnimation, QRect
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QEvent, QPropertyAnimation, QRect, QSize
 from PyQt6.QtGui import QAction, QFont, QIcon, QKeySequence, QPixmap
+import qtawesome as qta
 
 from config import config
 from services.hotkey_manager import format_hotkey_display
 from services.settings import SettingsKey, settings_manager
+from ui_qt.utils.theme_manager import load_theme_stylesheet
 from ui_qt.utils.collapse_animation import (
     SECTION_COLLAPSE_DURATION_MS,
     SECTION_COLLAPSE_EASING,
@@ -30,7 +33,7 @@ class CustomTitleBar(QFrame):
     _MENU_BAR_STYLE = """
         QMenuBar {
             background-color: transparent;
-            color: #8e8e93;
+            color: #9aa8bc;
             font-size: 12px;
             border: none;
             spacing: 0px;
@@ -40,15 +43,15 @@ class CustomTitleBar(QFrame):
             padding: 8px 10px 4px 10px;
         }
         QMenuBar::item:selected {
-            background-color: #3a3a3c;
-            color: #ffffff;
+            background-color: #1d2939;
+            color: #f3f6fb;
         }
         QMenuBar::item:pressed {
-            background-color: #48484a;
+            background-color: #203b5d;
         }
         QMenu::separator {
             height: 1px;
-            background-color: #3a3a3c;
+            background-color: #2b3749;
             margin: 4px 8px;
         }
     """
@@ -56,7 +59,7 @@ class CustomTitleBar(QFrame):
     _TITLE_LABEL_STYLE = """
         QLabel {
             background-color: transparent;
-            color: #f5f5f7;
+            color: #f3f6fb;
             font-size: 13px;
             font-weight: 600;
             font-family: 'Segoe UI', sans-serif;
@@ -67,13 +70,13 @@ class CustomTitleBar(QFrame):
         QPushButton {
             background-color: transparent;
             border: none;
-            color: #8e8e93;
+            color: #9aa8bc;
             font-size: 14px;
             font-family: 'Segoe UI', sans-serif;
         }
         QPushButton:hover {
-            background-color: #3a3a3c;
-            color: #ffffff;
+            background-color: #1d2939;
+            color: #f3f6fb;
         }
     """
 
@@ -81,20 +84,20 @@ class CustomTitleBar(QFrame):
         QPushButton {
             background-color: transparent;
             border: none;
-            color: #8e8e93;
+            color: #9aa8bc;
             font-size: 14px;
             font-family: 'Segoe UI', sans-serif;
         }
         QPushButton:hover {
-            background-color: #ff453a;
+            background-color: #e05260;
             color: #ffffff;
         }
     """
 
     _TITLE_BAR_STYLE = """
         #customTitleBar {
-            background-color: #2c2c2e;
-            border-bottom: 1px solid #3a3a3c;
+            background-color: #17202d;
+            border-bottom: 1px solid #2b3749;
         }
     """
 
@@ -104,16 +107,15 @@ class CustomTitleBar(QFrame):
         self._drag_position = None
         self._is_maximized = False
         self._normal_geometry = None  # Store geometry before maximizing
-        self.setFixedHeight(32)
+        self.setFixedHeight(38)
         self.setObjectName("customTitleBar")
         self.setAutoFillBackground(True)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 0, 0, 0)
+        layout.setContentsMargins(14, 0, 0, 0)
         layout.setSpacing(0)
 
         self._build_menu_bar(layout)
-        layout.addStretch()
         self._build_title_label(layout)
         layout.addStretch()
         self._build_window_buttons(layout)
@@ -121,36 +123,65 @@ class CustomTitleBar(QFrame):
         self.setStyleSheet(self._TITLE_BAR_STYLE)
 
     def _build_menu_bar(self, layout: QHBoxLayout) -> None:
-        """Create the integrated menu bar widget on the title bar."""
+        """Keep application actions available without visible duplicate menus."""
         from PyQt6.QtWidgets import QMenuBar
-        self.menu_bar = QMenuBar()
+        self.menu_bar = QMenuBar(self)
         self.menu_bar.setStyleSheet(self._MENU_BAR_STYLE)
-        layout.addWidget(self.menu_bar)
+        self.menu_bar.hide()
 
     def _build_title_label(self, layout: QHBoxLayout) -> None:
-        """Create the centered application title label."""
-        self.title_label = QLabel("OpenWhisper")
+        """Create a compact brand at the left edge."""
+        self.brand_icon = QLabel()
+        logo_path = (
+            Path(__file__).resolve().parent
+            / "assets"
+            / "meeting-recorder-logo.png"
+        )
+        logo = QPixmap(str(logo_path))
+        if not logo.isNull():
+            self.brand_icon.setPixmap(
+                logo.scaled(
+                    22,
+                    22,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        self.brand_icon.setFixedSize(28, 28)
+        self.brand_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.brand_icon)
+
+        self.title_label = QLabel("Запись встреч")
         self.title_label.setStyleSheet(self._TITLE_LABEL_STYLE)
         layout.addWidget(self.title_label)
 
     def _build_window_buttons(self, layout: QHBoxLayout) -> None:
         """Create the minimize/maximize/close window-control buttons."""
-        self.minimize_btn = QPushButton("─")
-        self.minimize_btn.setFixedSize(46, 32)
+        self.minimize_btn = QPushButton()
+        self.minimize_btn.setIcon(qta.icon("fa6s.minus", color="#9aa8bc"))
+        self.minimize_btn.setIconSize(QSize(12, 12))
+        self.minimize_btn.setFixedSize(44, 38)
         self.minimize_btn.setStyleSheet(self._WINDOW_BUTTON_STYLE)
-        self.minimize_btn.setToolTip("Minimize")
+        self.minimize_btn.setToolTip("Свернуть")
+        self.minimize_btn.setAccessibleName("Свернуть")
         self.minimize_btn.clicked.connect(self._minimize)
 
-        self.maximize_btn = QPushButton("□")
-        self.maximize_btn.setFixedSize(46, 32)
+        self.maximize_btn = QPushButton()
+        self.maximize_btn.setIcon(qta.icon("fa6s.expand", color="#9aa8bc"))
+        self.maximize_btn.setIconSize(QSize(12, 12))
+        self.maximize_btn.setFixedSize(44, 38)
         self.maximize_btn.setStyleSheet(self._WINDOW_BUTTON_STYLE)
-        self.maximize_btn.setToolTip("Maximize")
+        self.maximize_btn.setToolTip("Развернуть")
+        self.maximize_btn.setAccessibleName("Развернуть")
         self.maximize_btn.clicked.connect(self._toggle_maximize)
 
-        self.close_btn = QPushButton("✕")
-        self.close_btn.setFixedSize(46, 32)
+        self.close_btn = QPushButton()
+        self.close_btn.setIcon(qta.icon("fa6s.xmark", color="#9aa8bc"))
+        self.close_btn.setIconSize(QSize(13, 13))
+        self.close_btn.setFixedSize(44, 38)
         self.close_btn.setStyleSheet(self._CLOSE_BUTTON_STYLE)
-        self.close_btn.setToolTip("Close")
+        self.close_btn.setAccessibleName("Закрыть")
+        self.close_btn.setToolTip("Закрыть")
         self.close_btn.clicked.connect(self._close)
 
         layout.addWidget(self.minimize_btn)
@@ -169,14 +200,18 @@ class CustomTitleBar(QFrame):
                 # Restore to saved geometry
                 if self._normal_geometry:
                     self.parent_window.setGeometry(self._normal_geometry)
-                self.maximize_btn.setText("□")
-                self.maximize_btn.setToolTip("Maximize")
+                self.maximize_btn.setIcon(
+                    qta.icon("fa6s.expand", color="#9aa8bc")
+                )
+                self.maximize_btn.setToolTip("Развернуть")
             else:
                 # Save current geometry before maximizing
                 self._normal_geometry = self.parent_window.geometry()
                 self.parent_window.showMaximized()
-                self.maximize_btn.setText("❐")
-                self.maximize_btn.setToolTip("Restore")
+                self.maximize_btn.setIcon(
+                    qta.icon("fa6s.compress", color="#9aa8bc")
+                )
+                self.maximize_btn.setToolTip("Восстановить")
             self._is_maximized = not self._is_maximized
 
     def _close(self):
@@ -232,6 +267,7 @@ from ui_qt.widgets import (
     TranscriptionStatsWidget,
     TabbedContentWidget, QuickRecordTab, UploadFileTab,
     CompactRecordController,
+    VoiceNotesWorkspace,
 )
 from services.history_manager import history_manager
 from ui_qt.dialogs.history_entry_dialog import HistoryEntryDialog
@@ -253,18 +289,31 @@ class MainWindow(QMainWindow):
     whisper_engine_changed = pyqtSignal()  # Local engine (model/device/quant) changed
     transcription_ready = pyqtSignal(str)
     settings_requested = pyqtSignal()
+    devices_requested = pyqtSignal()
     model_manager_requested = pyqtSignal()
     hotkeys_requested = pyqtSignal()
     about_requested = pyqtSignal()
     history_toggle_requested = pyqtSignal()
     retranscribe_requested = pyqtSignal(str)  # audio_path
+    codex_improve_requested = pyqtSignal(
+        str, str, str
+    )  # audio_path, transcript, history_entry_id
     upload_file_requested = pyqtSignal(str)  # audio_path from upload tab Transcribe button
     tab_changed = pyqtSignal(int)  # Emitted when tab selection changes
 
     def __init__(self):
         """Initialize the main window."""
         super().__init__()
-        self.setWindowTitle("OpenWhisper")
+        self.setWindowTitle("Запись встреч")
+        self.setWindowIcon(
+            QIcon(
+                str(
+                    Path(__file__).resolve().parent
+                    / "assets"
+                    / "meeting-recorder-logo.ico"
+                )
+            )
+        )
 
         # Frameless window with custom title bar.
         # Keep the explicit Window type flag: setWindowFlags() replaces *all*
@@ -296,7 +345,8 @@ class MainWindow(QMainWindow):
         # Window sizing for sidebar toggle
         self._collapsed_width = config.MAIN_WINDOW_DEFAULT_WIDTH
         self._sidebar_width = config.MAIN_WINDOW_HISTORY_SIDEBAR_WIDTH
-        self._geometry_format = "collapsed_content_v1"
+        # Ignore geometry saved by the compact two-panel legacy UI.
+        self._geometry_format = "voice_notes_workspace_v3"
 
         # Height actually reclaimed by the last transcription collapse, so the
         # matching expand restores exactly that much (see _on_transcription_collapsed).
@@ -342,10 +392,10 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        # Subtle border to indicate resize areas on frameless window
+        # Resize hit-testing is handled in code, so the content needs no frame.
         central_widget.setStyleSheet("""
             QWidget#centralWidget {
-                border: 1px solid #3a3a3c;
+                border: 0;
             }
         """)
         central_widget.setObjectName("centralWidget")
@@ -353,7 +403,7 @@ class MainWindow(QMainWindow):
 
         # Outer layout for title bar + content
         outer_layout = QVBoxLayout(central_widget)
-        outer_layout.setContentsMargins(1, 1, 1, 1)  # 1px margin for border visibility
+        outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
         # Custom title bar
@@ -419,7 +469,24 @@ class MainWindow(QMainWindow):
         self.quick_record_tab.record_canceled.connect(self._on_quick_record_canceled)
         self.upload_file_tab.upload_requested.connect(self._on_upload_file_transcribe)
 
+        # Keep the original tabs alive for the existing controller while the
+        # new note-centric workspace becomes the visible Windows interface.
+        self.tabbed_content.hide()
         main_area_layout.addWidget(self.tabbed_content)
+        self.voice_notes_workspace = VoiceNotesWorkspace()
+        self.voice_notes_workspace.record_requested.connect(self.quick_record_tab.record_button.click)
+        self.voice_notes_workspace.stop_requested.connect(self.quick_record_tab.stop_button.click)
+        self.voice_notes_workspace.cancel_requested.connect(self.record_canceled.emit)
+        self.voice_notes_workspace.transcribe_requested.connect(self._on_upload_file_transcribe)
+        self.voice_notes_workspace.codex_improve_requested.connect(
+            self.codex_improve_requested.emit
+        )
+        self.voice_notes_workspace.model_selected.connect(self._on_workspace_model_selected)
+        self.voice_notes_workspace.theme_changed.connect(self._on_workspace_theme_changed)
+        self.voice_notes_workspace.settings_requested.connect(self.settings_requested)
+        self.voice_notes_workspace.devices_requested.connect(self.devices_requested)
+        self.voice_notes_workspace.models_requested.connect(self.model_manager_requested)
+        main_area_layout.addWidget(self.voice_notes_workspace, stretch=1)
         main_area_layout.addWidget(self.compact_controller)
 
         # Add main area to root layout
@@ -439,11 +506,16 @@ class MainWindow(QMainWindow):
         self.history_sidebar.retranscribe_requested.connect(self._on_retranscribe_requested)
         self.history_sidebar.width_animated.connect(self._on_sidebar_width_animated)
         root_layout.addWidget(self.history_sidebar)
+        self.history_edge_tab.hide()
+        self.history_sidebar.hide()
 
         # Sync the sidebar with the restored tab (must be after history_sidebar is created)
         self._on_tab_changed(self.tabbed_content.current_index())
 
         self._build_footer(outer_layout)
+        # Tray/compact/quit controls live in the app menu and made the visual
+        # workspace feel like a debug panel rather than a note app.
+        self.footer.hide()
 
     _FOOTER_BAR_STYLE = """
         QWidget#footerBar {
@@ -527,7 +599,7 @@ class MainWindow(QMainWindow):
         footer_layout.setSpacing(0)
         footer_layout.addStretch()
 
-        self.tray_button = Button("Minimize to Tray")
+        self.tray_button = Button("Свернуть в трей")
         self.tray_button.setObjectName("trayButton")
         self.tray_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.tray_button.setFixedHeight(34)
@@ -541,7 +613,7 @@ class MainWindow(QMainWindow):
 
         footer_layout.addSpacing(10)
 
-        self.compact_button = QPushButton("Compact")
+        self.compact_button = QPushButton("Компактный режим")
         self.compact_button.setObjectName("compactButton")
         self.compact_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.compact_button.setFixedHeight(34)
@@ -553,7 +625,7 @@ class MainWindow(QMainWindow):
 
         footer_layout.addSpacing(10)
 
-        self.quit_button = QPushButton("Quit")
+        self.quit_button = QPushButton("Выйти")
         self.quit_button.setObjectName("quitButton")
         self.quit_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.quit_button.setFixedHeight(34)
@@ -576,32 +648,32 @@ class MainWindow(QMainWindow):
         menubar = self.title_bar.menu_bar
 
         # File menu
-        file_menu = menubar.addMenu("File")
+        file_menu = menubar.addMenu("Файл")
         # Qt auto-assigns PreferencesRole to actions named "Settings", which
         # rewrites the label to "Preferences" on Windows. Keep our wording.
-        settings_action = file_menu.addAction("Settings", self.open_settings)
+        settings_action = file_menu.addAction("Настройки", self.open_settings)
         settings_action.setMenuRole(QAction.MenuRole.NoRole)
-        models_action = file_menu.addAction("Model Manager...", self.open_model_manager)
+        models_action = file_menu.addAction("Управление моделями…", self.open_model_manager)
         models_action.setMenuRole(QAction.MenuRole.NoRole)
-        file_menu.addAction("Hotkeys", self.open_hotkey_settings)
+        file_menu.addAction("Горячие клавиши", self.open_hotkey_settings)
         file_menu.addSeparator()
-        file_menu.addAction("Minimize to Tray", self.minimize_to_tray)
+        file_menu.addAction("Свернуть в трей", self.minimize_to_tray)
         quit_action = file_menu.addAction(
-            "Quit" if sys.platform == "darwin" else "Exit", self.quit_application
+            "Выйти", self.quit_application
         )
         quit_action.setMenuRole(QAction.MenuRole.NoRole)
         quit_action.setShortcut(QKeySequence(self.QUIT_SHORTCUT))
 
         # View menu
-        view_menu = menubar.addMenu("View")
-        history_action = view_menu.addAction("History", self.toggle_history)
+        view_menu = menubar.addMenu("Вид")
+        history_action = view_menu.addAction("История", self.toggle_history)
         history_action.setShortcut(QKeySequence(self.HISTORY_SHORTCUT))
-        compact_action = view_menu.addAction("Compact Mode", self.toggle_compact_mode)
+        compact_action = view_menu.addAction("Компактный режим", self.toggle_compact_mode)
         compact_action.setShortcut(QKeySequence(self.COMPACT_SHORTCUT))
 
         # Help menu
-        help_menu = menubar.addMenu("Help")
-        about_action = help_menu.addAction("About", self.show_about)
+        help_menu = menubar.addMenu("Справка")
+        about_action = help_menu.addAction("О приложении", self.show_about)
         about_action.setMenuRole(QAction.MenuRole.NoRole)
 
     def _connect_signals(self):
@@ -618,6 +690,9 @@ class MainWindow(QMainWindow):
                 tab.set_model_selection(saved_model)
             self.current_model = self.quick_record_tab.current_model
             self._apply_local_engine_visibility(self.current_model)
+            self._on_workspace_theme_changed(
+                settings_manager.get(SettingsKey.THEME, "light"), persist=False
+            )
             logger.info(f"Loaded saved model selection: {saved_model}")
         except Exception as e:
             logger.error(f"Failed to load saved settings: {e}")
@@ -652,7 +727,7 @@ class MainWindow(QMainWindow):
         self.is_recording = is_recording
         self.compact_controller.set_recording_state(is_recording)
         self.compact_controller.set_status(
-            "Recording in progress..." if is_recording else "Ready to record"
+            "Идёт запись…" if is_recording else "Готово к записи"
         )
 
         # Lock/unlock tabs during recording
@@ -667,7 +742,7 @@ class MainWindow(QMainWindow):
         """Handle cancel from Quick Record tab."""
         self.is_recording = False
         self.compact_controller.set_recording_state(False)
-        self.compact_controller.set_status("Ready to record")
+        self.compact_controller.set_status("Готово к записи")
         self.tabbed_content.set_recording_state(False, -1)
 
         self.record_canceled.emit()
@@ -716,6 +791,44 @@ class MainWindow(QMainWindow):
         """Handle Transcribe click from the Upload File tab."""
         self.upload_file_requested.emit(audio_path)
 
+    def _on_workspace_model_selected(self, model_name: str):
+        """Persist the local model selected beside the recording."""
+        if not model_name:
+            return
+        values = settings_manager.load_all_settings()
+        if values.get(SettingsKey.WHISPER_MODEL) == model_name:
+            return
+        values[SettingsKey.WHISPER_MODEL] = model_name
+        settings_manager.save_all_settings(values)
+        for tab in self.transcription_tabs:
+            tab.local_engine.load_from_settings()
+        self.whisper_engine_changed.emit()
+
+    def _on_workspace_theme_changed(self, theme_name: str, persist: bool = True):
+        """Apply one theme to the workspace and every inherited dialog."""
+        from pathlib import Path
+        from PyQt6.QtWidgets import QApplication
+        theme_name = "dark" if theme_name == "dark" else "light"
+        self.voice_notes_workspace.set_theme(theme_name)
+        app = QApplication.instance()
+        if app:
+            if theme_name == "dark":
+                theme_path = Path(__file__).parent / "styles" / "dark.qss"
+                app.setStyleSheet(load_theme_stylesheet(theme_path))
+            else:
+                theme_path = Path(__file__).parent / "styles" / "light.qss"
+                app.setStyleSheet(load_theme_stylesheet(theme_path))
+        if theme_name == "light":
+            self.title_bar.setStyleSheet("#customTitleBar{background:#ffffff;border-bottom:1px solid #e6e8ed;}")
+            self.title_bar.title_label.setStyleSheet("color:#171a20;font-size:13px;font-weight:600;font-family:'Segoe UI';")
+            self.title_bar.menu_bar.setStyleSheet("QMenuBar{background:transparent;color:#5f6672;border:0;} QMenuBar::item{padding:8px 10px 4px;} QMenuBar::item:selected{background:#edf4ff;color:#1769e0;}")
+        else:
+            self.title_bar.setStyleSheet(self.title_bar._TITLE_BAR_STYLE)
+            self.title_bar.title_label.setStyleSheet(self.title_bar._TITLE_LABEL_STYLE)
+            self.title_bar.menu_bar.setStyleSheet(self.title_bar._MENU_BAR_STYLE)
+        if persist:
+            values = settings_manager.load_all_settings(); values[SettingsKey.THEME] = theme_name; settings_manager.save_all_settings(values)
+
     def _update_recording_state(self):
         """Update UI states based on recording status."""
         # Delegate to quick record tab
@@ -723,8 +836,9 @@ class MainWindow(QMainWindow):
         self.quick_record_tab._update_recording_state()
         self.compact_controller.set_recording_state(self.is_recording)
         self.compact_controller.set_status(
-            "Recording in progress..." if self.is_recording else "Ready to record"
+            "Идёт запись…" if self.is_recording else "Готово к записи"
         )
+        self.voice_notes_workspace.set_recording(self.is_recording)
 
         # Lock/unlock tabs during recording
         if self.is_recording:
@@ -755,6 +869,15 @@ class MainWindow(QMainWindow):
             raw: Optional unprocessed ASR text when distinct from ``text``.
         """
         self.quick_record_tab.set_transcript(text, raw=raw)
+        self.voice_notes_workspace.set_transcript(text)
+
+    def set_transcription_state(
+        self, state: str, audio_path: str = "", message: str = ""
+    ):
+        """Reflect one transcription job across the meeting workspace."""
+        self.voice_notes_workspace.set_transcription_state(
+            state, audio_path, message
+        )
 
     def append_transcription(self, text: str):
         """Append text to the transcription."""
@@ -957,12 +1080,13 @@ class MainWindow(QMainWindow):
             self._compact_mode = True
 
             self.tabbed_content.hide()
+            self.voice_notes_workspace.hide()
             self.compact_controller.show()
             self.history_edge_tab.hide()
             self.history_sidebar.hide()
             self.title_bar.title_label.hide()
             self.title_bar.maximize_btn.hide()
-            self.compact_button.setText("Full Size")
+            self.compact_button.setText("Полный размер")
 
             self.setMinimumSize(0, 0)
             self.setMaximumSize(UNLIMITED_HEIGHT, UNLIMITED_HEIGHT)
@@ -981,12 +1105,13 @@ class MainWindow(QMainWindow):
             )
             self.setMaximumSize(config.MAIN_WINDOW_MAX_WIDTH, UNLIMITED_HEIGHT)
             self.compact_controller.hide()
-            self.tabbed_content.show()
-            self.history_edge_tab.show()
-            self.history_sidebar.show()
+            self.tabbed_content.hide()
+            self.voice_notes_workspace.show()
+            self.history_edge_tab.hide()
+            self.history_sidebar.hide()
             self.title_bar.title_label.show()
             self.title_bar.maximize_btn.show()
-            self.compact_button.setText("Compact")
+            self.compact_button.setText("Компактный режим")
 
             if self._full_geometry is not None:
                 self.setGeometry(self._full_geometry)
@@ -1151,6 +1276,7 @@ class MainWindow(QMainWindow):
     def refresh_history(self):
         """Refresh the history sidebar content."""
         self.history_sidebar.refresh()
+        self.voice_notes_workspace.refresh_history()
 
     def _on_history_entry_selected(self, entry_id: str):
         """Open the history entry viewer dialog for the selected tile."""
@@ -1167,8 +1293,8 @@ class MainWindow(QMainWindow):
 
     def _on_history_entry_copied_from_dialog(self):
         """Handle copy from the history entry dialog."""
-        self.set_status("Copied to clipboard")
-        QTimer.singleShot(2000, lambda: self.set_status("Ready to record"))
+        self.set_status("Скопировано")
+        QTimer.singleShot(2000, lambda: self.set_status("Готово к записи"))
         if self.on_show_copied_animation:
             self.on_show_copied_animation()
 
@@ -1181,15 +1307,15 @@ class MainWindow(QMainWindow):
 
     def _on_history_entry_copied(self, entry_id: str):
         """Handle history entry copied notification."""
-        self.set_status("Copied to clipboard")
+        self.set_status("Скопировано")
         # Auto-clear status after delay
-        QTimer.singleShot(2000, lambda: self.set_status("Ready to record"))
+        QTimer.singleShot(2000, lambda: self.set_status("Готово к записи"))
 
     def _on_history_entry_deleted(self, entry_id: str):
         """Handle history entry deleted notification."""
-        self.set_status("Entry deleted")
+        self.set_status("Запись удалена")
         # Auto-clear status after delay
-        QTimer.singleShot(2000, lambda: self.set_status("Ready to record"))
+        QTimer.singleShot(2000, lambda: self.set_status("Готово к записи"))
 
     def _on_retranscribe_requested(self, audio_path: str):
         """Handle re-transcription request for a saved recording."""
@@ -1431,6 +1557,8 @@ class MainWindow(QMainWindow):
         """Restore window geometry from settings."""
         try:
             geo = settings_manager.get(SettingsKey.WINDOW_GEOMETRY)
+            if isinstance(geo, dict) and geo.get('format') != self._geometry_format:
+                geo = None
             if isinstance(geo, dict) and {'x', 'y', 'width', 'height'}.issubset(geo.keys()):
                 # Validate geometry is within screen bounds
                 from PyQt6.QtWidgets import QApplication
@@ -1495,7 +1623,13 @@ class MainWindow(QMainWindow):
                         logger.info(f"Restored window geometry: {geo}")
                         return
 
-            logger.debug("No valid saved geometry, using default")
+            # New workspaces should open in the centre, not pinned to a
+            # previous compact-era corner position.
+            from PyQt6.QtWidgets import QApplication
+            screen = QApplication.primaryScreen()
+            if screen:
+                self.move(screen.availableGeometry().center() - self.rect().center())
+            logger.debug("No valid saved geometry, using centred default")
         except Exception as e:
             logger.warning(f"Failed to restore window geometry: {e}")
 

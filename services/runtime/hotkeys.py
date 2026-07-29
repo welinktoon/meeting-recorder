@@ -269,7 +269,7 @@ class HotkeyRuntime:
             self.controller.hotkey_manager.update_hotkeys(hotkeys)
             settings_manager.save_hotkey_settings(hotkeys)
             self.controller.ui_controller.update_hotkey_display(hotkeys)
-            self.controller.ui_controller.set_status("Hotkeys updated")
+            self.controller.ui_controller.set_status("Горячие клавиши обновлены")
 
     def setup_hook_watchdog(self) -> None:
         """Setup timers to detect sleep and refresh the keyboard hook."""
@@ -376,7 +376,7 @@ class HotkeyRuntime:
         """Emit a thread-safe status update and optional STT state change."""
         self.controller.status_update.emit(status)
 
-        if status == "STT Enabled":
+        if status in {"STT Enabled", "Распознавание включено"}:
             self.controller.stt_state_changed.emit(True)
-        elif status == "STT Disabled":
+        elif status in {"STT Disabled", "Распознавание выключено"}:
             self.controller.stt_state_changed.emit(False)

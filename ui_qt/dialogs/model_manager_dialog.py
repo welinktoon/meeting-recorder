@@ -12,8 +12,9 @@ a single instance and re-raises it instead of stacking copies.
 """
 import logging
 from typing import Callable, Dict, Optional
+import qtawesome as qta
 
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -72,6 +73,8 @@ class _CompactStat(QWidget):
 class ModelManagerDialog(QDialog):
     """Non-modal manager for the local Whisper model cache."""
 
+    close_requested = pyqtSignal()
+
     def __init__(
         self,
         get_loaded_model: Optional[Callable[[], Optional[str]]] = None,
@@ -87,8 +90,9 @@ class ModelManagerDialog(QDialog):
         super().__init__(parent)
         self._get_loaded_model = get_loaded_model
         self._downloading_model: Optional[str] = None
+        self._embedded_mode = False
 
-        self.setWindowTitle("Model Manager")
+        self.setWindowTitle("Модели Whisper")
         self.setModal(False)
         self.setMinimumSize(720, 500)
         self.resize(720, 560)
@@ -107,32 +111,28 @@ class ModelManagerDialog(QDialog):
         header_row.setSpacing(8)
         title_block = QVBoxLayout()
         title_block.setSpacing(2)
-        title = QLabel("Local models")
+        title = QLabel("Локальные модели")
         title.setObjectName("headerLabel")
-        subtitle = QLabel("Download and choose a Whisper model")
+        subtitle = QLabel("Модели для локальной расшифровки")
         subtitle.setObjectName("infoLabel")
         title_block.addWidget(title)
         title_block.addWidget(subtitle)
         header_row.addLayout(title_block)
         header_row.addStretch()
-        open_folder_btn = Button("Open Folder")
+        open_folder_btn = Button("Открыть папку")
+        open_folder_btn.setIcon(
+            qta.icon("fa6s.folder-open", color="#1769e0")
+        )
         self._compact_button(open_folder_btn, 110)
         open_folder_btn.setToolTip(
-            "Open the folder where downloaded models are stored"
+            "Открыть папку с установленными моделями"
         )
         open_folder_btn.clicked.connect(self._on_open_cache_folder)
         header_row.addWidget(open_folder_btn)
         layout.addLayout(header_row)
 
-        cache_path = get_hf_cache_dir()
-        cache_path_label = QLabel(f"Cache: {cache_path}")
-        cache_path_label.setObjectName("modelManagerCachePath")
-        cache_path_label.setToolTip(cache_path)
-        layout.addWidget(cache_path_label)
-
         self.env_banner = QLabel(
-            "Downloads are disabled by the HF_HUB_OFFLINE environment "
-            "variable set outside this application."
+            "Загрузка моделей отключена внешней переменной HF_HUB_OFFLINE."
         )
         self.env_banner.setObjectName("modelManagerEnvBanner")
         self.env_banner.setWordWrap(True)
@@ -141,8 +141,8 @@ class ModelManagerDialog(QDialog):
 
         stats_row = QHBoxLayout()
         stats_row.setSpacing(8)
-        self.downloaded_stat = _CompactStat("downloaded", "0")
-        self.disk_stat = _CompactStat("used", "0 B")
+        self.downloaded_stat = _CompactStat("установлено", "0")
+        self.disk_stat = _CompactStat("на диске", "0 Б")
         stats_row.addWidget(self.downloaded_stat)
         divider = QLabel("•")
         divider.setObjectName("modelManagerStatLabel")
@@ -156,27 +156,27 @@ class ModelManagerDialog(QDialog):
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setObjectName("modelManagerSearch")
-        self.filter_edit.setPlaceholderText("Search models")
+        self.filter_edit.setPlaceholderText("Поиск моделей")
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.textChanged.connect(self._apply_filter)
         toolbar.addWidget(self.filter_edit, stretch=1)
 
         self.status_filter_combo = QComboBox()
         self.status_filter_combo.setObjectName("modelManagerStatusFilter")
-        self.status_filter_combo.addItem("All", "all")
-        self.status_filter_combo.addItem("Downloaded", "downloaded")
-        self.status_filter_combo.addItem("Not downloaded", "not_downloaded")
-        self.status_filter_combo.setToolTip("Filter by download status")
+        self.status_filter_combo.addItem("Все", "all")
+        self.status_filter_combo.addItem("Установленные", "downloaded")
+        self.status_filter_combo.addItem("Не установленные", "not_downloaded")
+        self.status_filter_combo.setToolTip("Фильтр по состоянию загрузки")
         self.status_filter_combo.currentIndexChanged.connect(self._apply_filter)
         toolbar.addWidget(self.status_filter_combo)
 
         self.sort_combo = QComboBox()
         self.sort_combo.setObjectName("modelManagerSort")
-        self.sort_combo.addItem("Recommended", "recommended")
-        self.sort_combo.addItem("Downloaded first", "downloaded")
-        self.sort_combo.addItem("Smallest first", "size")
-        self.sort_combo.addItem("Name A-Z", "name")
-        self.sort_combo.setToolTip("Sort model list")
+        self.sort_combo.addItem("Рекомендуемые", "recommended")
+        self.sort_combo.addItem("Сначала установленные", "downloaded")
+        self.sort_combo.addItem("Сначала компактные", "size")
+        self.sort_combo.addItem("По названию", "name")
+        self.sort_combo.setToolTip("Сортировка списка моделей")
         self.sort_combo.currentIndexChanged.connect(self._apply_filter)
         toolbar.addWidget(self.sort_combo)
         layout.addLayout(toolbar)
@@ -204,7 +204,7 @@ class ModelManagerDialog(QDialog):
             self.rows[model_name] = row
             self.list_layout.addWidget(row)
 
-        self.empty_label = QLabel("No models match")
+        self.empty_label = QLabel("Подходящих моделей нет")
         self.empty_label.setObjectName("infoLabel")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setVisible(False)
@@ -219,11 +219,26 @@ class ModelManagerDialog(QDialog):
         self.message_label = QLabel("")
         self.message_label.setObjectName("infoLabel")
         footer.addWidget(self.message_label, stretch=1)
-        close_btn = Button("Close")
-        self._compact_button(close_btn, 82)
-        close_btn.clicked.connect(self.close)
-        footer.addWidget(close_btn)
+        self.close_btn = Button("Закрыть")
+        self._compact_button(self.close_btn, 82)
+        self.close_btn.clicked.connect(self._close_or_return)
+        footer.addWidget(self.close_btn)
         layout.addLayout(footer)
+
+    def set_embedded_mode(self, enabled: bool = True):
+        """Display the model manager inside the main workspace."""
+        self._embedded_mode = enabled
+        if enabled:
+            self.setWindowFlags(Qt.WindowType.Widget)
+            self.setModal(False)
+            self.setMinimumSize(0, 0)
+            self.close_btn.hide()
+
+    def _close_or_return(self):
+        if self._embedded_mode:
+            self.close_requested.emit()
+            return
+        self.close()
 
     @staticmethod
     def _compact_button(button: Button, width: int) -> None:
@@ -255,9 +270,9 @@ class ModelManagerDialog(QDialog):
     def _on_delete_clicked(self, model_name: str):
         reply = QMessageBox.question(
             self,
-            "Delete Model",
-            f'Delete the downloaded files for "{model_name}"?\n\n'
-            "You can download the model again later.",
+            "Удалить модель",
+            f'Удалить файлы модели «{model_name}»?\n\n'
+            "Позже её можно будет загрузить снова.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -316,7 +331,7 @@ class ModelManagerDialog(QDialog):
     def set_downloading(self, model_name: str) -> None:
         """Mark a model as downloading (badge + disabled buttons)."""
         self._downloading_model = model_name
-        self.message_label.setText(f'Downloading "{model_name}"…')
+        self.message_label.setText(f'Загружается модель «{model_name}»…')
         self.refresh()
 
     def finish_download(self, model_name: str, success: bool) -> None:
@@ -324,16 +339,16 @@ class ModelManagerDialog(QDialog):
         if self._downloading_model == model_name:
             self._downloading_model = None
         self.message_label.setText(
-            "" if success else f'Download of "{model_name}" failed'
+            "" if success else f'Не удалось загрузить модель «{model_name}»'
         )
         self.refresh()
 
     def show_delete_result(self, model_name: str, success: bool, error: str) -> None:
         """Report a delete outcome (row refresh arrives via cache-changed)."""
         if success:
-            self.message_label.setText(f'Deleted "{model_name}"')
+            self.message_label.setText(f'Модель «{model_name}» удалена')
         else:
-            self.message_label.setText(f"Could not delete: {error}")
+            self.message_label.setText(f"Не удалось удалить модель: {error}")
 
     # ── Filter ─────────────────────────────────────────────────────
 

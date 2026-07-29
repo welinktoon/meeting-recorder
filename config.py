@@ -7,10 +7,15 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Dict, List, Tuple
 
+from services.app_paths import get_app_data_dir, migrate_legacy_user_data
+
 try:
     import numpy as np
 except ImportError:  # pragma: no cover - lightweight fallback for test/import environments
     np = SimpleNamespace(int16="int16")
+
+_APP_DATA_DIR = get_app_data_dir()
+migrate_legacy_user_data(_APP_DATA_DIR)
 
 
 @dataclass
@@ -18,10 +23,10 @@ class AppConfig:
     """Centralized configuration for the OpenWhisper application."""
 
     # File paths
-    SETTINGS_FILE: str = "openwhisper_settings.json"
-    RECORDED_AUDIO_FILE: str = "recorded_audio.wav"
-    LOG_FILE: str = "openwhisper.log"
-    ENV_FILE: str = ".env"
+    SETTINGS_FILE: str = str(_APP_DATA_DIR / "openwhisper_settings.json")
+    RECORDED_AUDIO_FILE: str = str(_APP_DATA_DIR / "recorded_audio.wav")
+    LOG_FILE: str = str(_APP_DATA_DIR / "openwhisper.log")
+    ENV_FILE: str = str(_APP_DATA_DIR / ".env")
 
     # Logging configuration
     LOG_LEVEL: str = os.environ.get("OPENWHISPER_LOG_LEVEL", "INFO").upper()
@@ -30,11 +35,21 @@ class AppConfig:
     LOG_BACKUP_COUNT: int = 3
 
     # History and recordings
-    HISTORY_FILE: str = "transcription_history.json"
-    RECORDINGS_FOLDER: str = "recordings"
+    HISTORY_FILE: str = str(_APP_DATA_DIR / "transcription_history.json")
+    RECORDINGS_FOLDER: str = os.path.join(
+        os.path.expanduser("~"),
+        "Documents",
+        "Записи встреч",
+    )
     # Default when retention mode is "custom" (None / keep_all means unlimited).
     MAX_SAVED_RECORDINGS: int = 20
-    DATABASE_FILE: str = "openwhisper.db"
+    DATABASE_FILE: str = str(_APP_DATA_DIR / "openwhisper.db")
+
+    # Meeting video capture defaults. Video is recorded locally alongside the
+    # audio file only when the "Экран и звук" option is enabled.
+    VIDEO_RECORDING_ENABLED: bool = True
+    VIDEO_RECORDING_FPS: int = 15
+    VIDEO_RECORDING_CRF: int = 24
 
     # Audio settings
     CHUNK_SIZE: int = 1024
@@ -59,28 +74,30 @@ class AppConfig:
     WHISPER_MODEL_CHOICES: List[str] = None
 
     # Main window sizing
-    MAIN_WINDOW_MIN_WIDTH: int = 500
+    # The note workspace has a navigation rail, recordings list, and a
+    # transcript editor. Below this width the editor becomes unusable.
+    MAIN_WINDOW_MIN_WIDTH: int = 1120
     # Lowered so the window can shrink smoothly once the transcription box is
     # collapsed; the layout's own minimum still governs the expanded state.
-    MAIN_WINDOW_MIN_HEIGHT: int = 460
-    MAIN_WINDOW_DEFAULT_WIDTH: int = 605
+    MAIN_WINDOW_MIN_HEIGHT: int = 720
+    MAIN_WINDOW_DEFAULT_WIDTH: int = 1200
     # Compact height for the collapsed transcription + local-engine layout.
-    MAIN_WINDOW_DEFAULT_HEIGHT: int = 580
+    MAIN_WINDOW_DEFAULT_HEIGHT: int = 900
     # Target height when the user expands the transcription panel.
     MAIN_WINDOW_TRANSCRIPTION_EXPAND_HEIGHT: int = 840
     MAIN_WINDOW_HISTORY_SIDEBAR_WIDTH: int = 380
     MAIN_WINDOW_HISTORY_EDGE_TAB_WIDTH: int = 24
-    MAIN_WINDOW_MAX_WIDTH: int = 1280
+    MAIN_WINDOW_MAX_WIDTH: int = 1920
     # A collapsed transcript should reopen at the compact full-window height,
     # even when the last saved geometry came from an expanded transcript.
-    MAIN_WINDOW_COLLAPSED_RESTORE_MAX_HEIGHT: int = MAIN_WINDOW_DEFAULT_HEIGHT
+    MAIN_WINDOW_COLLAPSED_RESTORE_MAX_HEIGHT: int = 800
     MAIN_WINDOW_COMPACT_WIDTH: int = 420
     MAIN_WINDOW_COMPACT_HEIGHT: int = 250
 
     # Waveform overlay settings
-    WAVEFORM_OVERLAY_WIDTH: int = 300
-    WAVEFORM_OVERLAY_HEIGHT: int = 80
-    WAVEFORM_STREAMING_MAX_HEIGHT: int = 400  # Soft cap; also limited by screen space near cursor
+    WAVEFORM_OVERLAY_WIDTH: int = 184
+    WAVEFORM_OVERLAY_HEIGHT: int = 42
+    WAVEFORM_STREAMING_MAX_HEIGHT: int = 120
     WAVEFORM_FRAME_RATE: int = 30
     WAVEFORM_LEVEL_SMOOTHING: float = 0.7
 
@@ -150,12 +167,11 @@ class AppConfig:
     TRANSCRIPT_CLEANUP_REASONING: str = "off"  # off | low | medium | high
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     TRANSCRIPT_CLEANUP_PROMPT: str = (
-        "You clean up speech-to-text transcripts. "
-        "Fix punctuation and capitalization, remove filler words "
-        "(um, uh, like as filler, you know), and fix obvious ASR errors. "
-        "Do not invent content, do not add information that was not spoken, "
-        "and preserve meaning, tone, and proper nouns. "
-        "Return only the cleaned transcript text with no preamble or quotes."
+        "Улучшай расшифровки речи: исправляй пунктуацию, регистр и "
+        "очевидные ошибки распознавания, убирай слова-паразиты. "
+        "Не выдумывай содержание и не добавляй того, чего не было сказано. "
+        "Сохраняй смысл, тон и имена собственные. Возвращай только "
+        "исправленный текст без вступления и кавычек."
     )
     # Learned cleanup rules (user-taught behaviors appended to the base prompt)
     MAX_TRANSCRIPT_CLEANUP_RULES: int = 50

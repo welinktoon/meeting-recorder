@@ -32,7 +32,18 @@ node_modules/
 **/__pycache__/
 *__pycache__*
 .pytest_cache/
-*.spec
+build/
+dist/
+installer-output/
+.build-venv/
+
+# Local QA and launch artifacts
+docs/qa/
+design-qa.md
+docs/voice-notes-plan.md
+*.lnk
+Запустить.cmd
+Установить.cmd
 
 # Editor / tool state
 .claude/settings.local.json

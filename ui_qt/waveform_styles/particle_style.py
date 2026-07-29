@@ -96,7 +96,7 @@ class ParticleStyle(BaseWaveformStyle):
         b = int(hex_color[4:6], 16)
         return QColor(r, g, b)
 
-    def draw_recording_state(self, painter: QPainter, rect: QRect, message: str = "Recording..."):
+    def draw_recording_state(self, painter: QPainter, rect: QRect, message: str = "Запись"):
         """Draw particles responding to audio levels."""
         dt = 1/30  # Approximate dt since we don't have exact frame delta here easily without passing it
         # Actually base_style has update_animation_time which updates self.animation_time
@@ -118,7 +118,7 @@ class ParticleStyle(BaseWaveformStyle):
         # Draw status text
         self._draw_text(painter, rect, message)
 
-    def draw_processing_state(self, painter: QPainter, rect: QRect, message: str = "Processing..."):
+    def draw_processing_state(self, painter: QPainter, rect: QRect, message: str = "Подготовка"):
         """Draw swirling particle vortex."""
         dt = 1/30
         center_x = rect.width() // 2
@@ -145,7 +145,7 @@ class ParticleStyle(BaseWaveformStyle):
         self._draw_particles(painter)
         self._draw_text(painter, rect, message)
 
-    def draw_transcribing_state(self, painter: QPainter, rect: QRect, message: str = "Transcribing..."):
+    def draw_transcribing_state(self, painter: QPainter, rect: QRect, message: str = "Расшифровка"):
         """Draw particles converging to center."""
         dt = 1/30
 
@@ -186,7 +186,7 @@ class ParticleStyle(BaseWaveformStyle):
         self._draw_particles(painter)
         self._draw_text(painter, rect, message)
 
-    def draw_canceling_state(self, painter: QPainter, rect: QRect, message: str = "Canceled"):
+    def draw_canceling_state(self, painter: QPainter, rect: QRect, message: str = "Отменено"):
         """Draw canceling state with a quick red burst."""
         progress = self.get_cancellation_progress()
 
@@ -224,11 +224,11 @@ class ParticleStyle(BaseWaveformStyle):
         else:
             self._last_cancel_progress = progress
 
-    def draw_stt_enable_state(self, painter: QPainter, rect: QRect, message: str = "STT Enabled"):
+    def draw_stt_enable_state(self, painter: QPainter, rect: QRect, message: str = "Включено"):
         """Draw STT enable state."""
         self._draw_text(painter, rect, message)
 
-    def draw_stt_disable_state(self, painter: QPainter, rect: QRect, message: str = "STT Disabled"):
+    def draw_stt_disable_state(self, painter: QPainter, rect: QRect, message: str = "Выключено"):
         """Draw STT disable state."""
         self._draw_text(painter, rect, message)
 

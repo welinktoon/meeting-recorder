@@ -192,6 +192,91 @@ class TestSettingsManager(unittest.TestCase):
             self.settings_manager.save_hf_access_policy("sometimes")
 
 
+class TestCodexCleanupSettings(unittest.TestCase):
+    def test_defaults_are_disabled_and_correction_mode(self):
+        from services.codex_cleanup import CodexCleanupMode
+        from services.settings import (
+            CodexCleanupTrigger,
+            resolve_codex_cleanup_enabled,
+            resolve_codex_cleanup_mode,
+            resolve_codex_cleanup_trigger,
+        )
+
+        self.assertFalse(resolve_codex_cleanup_enabled({}))
+        self.assertEqual(
+            resolve_codex_cleanup_mode({}),
+            CodexCleanupMode.CORRECT,
+        )
+        self.assertEqual(
+            resolve_codex_cleanup_trigger({}),
+            CodexCleanupTrigger.MANUAL,
+        )
+
+    def test_invalid_mode_falls_back_safely(self):
+        from services.codex_cleanup import CodexCleanupMode
+        from services.settings import (
+            SettingsKey,
+            resolve_codex_cleanup_mode,
+        )
+
+        self.assertEqual(
+            resolve_codex_cleanup_mode(
+                {SettingsKey.CODEX_CLEANUP_MODE: "unknown"}
+            ),
+            CodexCleanupMode.CORRECT,
+        )
+
+    def test_explicit_automatic_trigger_is_preserved(self):
+        from services.settings import (
+            CodexCleanupTrigger,
+            SettingsKey,
+            resolve_codex_cleanup_trigger,
+        )
+
+        self.assertEqual(
+            resolve_codex_cleanup_trigger(
+                {
+                    SettingsKey.CODEX_CLEANUP_TRIGGER:
+                    CodexCleanupTrigger.AUTOMATIC
+                }
+            ),
+            CodexCleanupTrigger.AUTOMATIC,
+        )
+
+
+class TestOverlayBadgeSettings(unittest.TestCase):
+    def test_transcription_and_cleanup_badges_default_to_hidden(self):
+        from services.settings import (
+            OverlayBadge,
+            resolve_overlay_state_visibility,
+        )
+
+        visibility = resolve_overlay_state_visibility({})
+
+        self.assertFalse(visibility[OverlayBadge.TRANSCRIBING])
+        self.assertFalse(visibility[OverlayBadge.CLEANING])
+        self.assertTrue(visibility[OverlayBadge.RECORDING])
+        self.assertTrue(visibility[OverlayBadge.COPIED])
+
+    def test_saved_badge_choices_override_defaults(self):
+        from services.settings import (
+            OverlayBadge,
+            SettingsKey,
+            resolve_overlay_state_visibility,
+        )
+
+        visibility = resolve_overlay_state_visibility({
+            SettingsKey.OVERLAY_STATE_VISIBILITY: {
+                OverlayBadge.TRANSCRIBING: True,
+                OverlayBadge.RECORDING: False,
+            }
+        })
+
+        self.assertTrue(visibility[OverlayBadge.TRANSCRIBING])
+        self.assertFalse(visibility[OverlayBadge.RECORDING])
+        self.assertFalse(visibility[OverlayBadge.CLEANING])
+
+
 class TestTranscriptCleanupRules(unittest.TestCase):
     """Learned-rules resolution and prompt composition."""
 

@@ -8,7 +8,7 @@ that apply in the current state (Download / Set Active / Delete).
 import logging
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QAbstractButton,
@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QVBoxLayout,
 )
+import qtawesome as qta
 
 from services.hf_access import (
     CachedModelInfo,
@@ -169,20 +170,19 @@ class ModelRowWidget(QFrame):
         self.sort_size_bytes = 0
 
         self.setObjectName("modelRow")
-        self.setStyleSheet(_ROW_STYLE)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setToolTip("Click to view technical details")
-        self.setAccessibleName(f"{model_name} model")
+        self.setToolTip("Нажмите, чтобы посмотреть сведения о модели")
+        self.setAccessibleName(f"Модель {model_name}")
         self.setAccessibleDescription(
-            "Open technical details. Model management actions are separate."
+            "Открыть технические сведения о модели."
         )
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 10, 12, 10)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 8, 10, 8)
+        layout.setSpacing(8)
 
         # Identity column: model name over summary.
         identity = QVBoxLayout()
@@ -190,14 +190,24 @@ class ModelRowWidget(QFrame):
 
         name_label = QLabel(self.model_name)
         name_label.setObjectName("modelRowName")
-        name_font = QFont("Segoe UI", 10)
+        name_font = QFont("Segoe UI")
+        name_font.setPixelSize(13)
+        name_font.setCapitalization(QFont.Capitalization.MixedCase)
+        name_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.0)
         name_font.setBold(True)
         name_label.setFont(name_font)
         identity.addWidget(name_label)
 
         self.repo_label = QLabel(self._model_summary())
         self.repo_label.setObjectName("modelRowSummary")
-        self.repo_label.setFont(QFont("Segoe UI", 8))
+        summary_font = QFont("Segoe UI")
+        summary_font.setPixelSize(11)
+        summary_font.setCapitalization(QFont.Capitalization.MixedCase)
+        summary_font.setLetterSpacing(
+            QFont.SpacingType.AbsoluteSpacing,
+            0.0,
+        )
+        self.repo_label.setFont(summary_font)
         self.repo_label.setToolTip(self.repo_id)
         identity.addWidget(self.repo_label)
 
@@ -205,7 +215,10 @@ class ModelRowWidget(QFrame):
 
         self.size_label = QLabel("")
         self.size_label.setObjectName("modelRowSize")
-        self.size_label.setFont(QFont("Segoe UI", 9))
+        size_font = QFont("Segoe UI")
+        size_font.setPixelSize(12)
+        size_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.0)
+        self.size_label.setFont(size_font)
         self.size_label.setMinimumWidth(72)
         self.size_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -216,27 +229,66 @@ class ModelRowWidget(QFrame):
         self.badge.setObjectName("modelRowBadge")
         self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.badge.setFixedHeight(22)
+        self.badge.setFixedWidth(110)
+        badge_font = QFont("Segoe UI")
+        badge_font.setPixelSize(10)
+        badge_font.setCapitalization(QFont.Capitalization.MixedCase)
+        badge_font.setLetterSpacing(
+            QFont.SpacingType.AbsoluteSpacing,
+            0.0,
+        )
+        self.badge.setFont(badge_font)
         layout.addWidget(self.badge)
 
-        self.download_button = PrimaryButton("Download")
+        self.download_button = PrimaryButton("")
         self.download_button.setObjectName("modelDownloadButton")
-        self._compact_button(self.download_button, 90)
+        self._compact_button(self.download_button, 34)
+        self.download_button.setIcon(
+            qta.icon(
+                "fa6s.download",
+                color="#ffffff",
+                color_disabled="#636366",
+            )
+        )
+        self.download_button.setIconSize(QSize(14, 14))
+        self.download_button.setToolTip("Загрузить модель")
+        self.download_button.setAccessibleName("Загрузить модель")
         self.download_button.clicked.connect(
             lambda: self.download_clicked.emit(self.model_name)
         )
         layout.addWidget(self.download_button)
 
-        self.set_active_button = Button("Set Active")
+        self.set_active_button = Button("")
         self.set_active_button.setObjectName("modelSetActiveButton")
-        self._compact_button(self.set_active_button, 90)
+        self._compact_button(self.set_active_button, 34)
+        self.set_active_button.setIcon(
+            qta.icon(
+                "fa6s.check",
+                color="#1769e0",
+                color_disabled="#636366",
+            )
+        )
+        self.set_active_button.setIconSize(QSize(14, 14))
+        self.set_active_button.setToolTip("Выбрать модель")
+        self.set_active_button.setAccessibleName("Выбрать модель")
         self.set_active_button.clicked.connect(
             lambda: self.set_active_clicked.emit(self.model_name)
         )
         layout.addWidget(self.set_active_button)
 
-        self.delete_button = DangerButton("Delete")
+        self.delete_button = DangerButton("")
         self.delete_button.setObjectName("modelDeleteButton")
-        self._compact_button(self.delete_button, 72)
+        self._compact_button(self.delete_button, 34)
+        self.delete_button.setIcon(
+            qta.icon(
+                "fa6s.trash-can",
+                color="#ff6961",
+                color_disabled="#636366",
+            )
+        )
+        self.delete_button.setIconSize(QSize(14, 14))
+        self.delete_button.setToolTip("Удалить модель")
+        self.delete_button.setAccessibleName("Удалить модель")
         self.delete_button.clicked.connect(
             lambda: self.delete_clicked.emit(self.model_name)
         )
@@ -244,8 +296,8 @@ class ModelRowWidget(QFrame):
 
     def _model_summary(self) -> str:
         """Return a compact, user-facing description of this model."""
-        language = "English only" if self.model_name.endswith(".en") else "Multilingual"
-        family = "Distilled" if self.model_name.startswith("distil-") else ""
+        language = "Только английский" if self.model_name.endswith(".en") or self.model_name.startswith("distil-") else "Многоязычная"
+        family = "Облегчённая" if self.model_name.startswith("distil-") else ""
         return " / ".join(part for part in (language, family) if part)
 
     @staticmethod
@@ -308,7 +360,7 @@ class ModelRowWidget(QFrame):
             self.sort_size_bytes = info.size_bytes
         else:
             estimate = format_download_size(self.model_name)
-            self.size_label.setText(estimate or "size unknown")
+            self.size_label.setText(estimate or "размер неизвестен")
             self.size_label.setProperty("muted", True)
             self.sort_size_bytes = (
                 MODEL_DOWNLOAD_SIZE_MB.get(self.model_name, float("inf"))
@@ -318,13 +370,13 @@ class ModelRowWidget(QFrame):
         self.size_label.style().polish(self.size_label)
 
         if downloading:
-            self._set_badge("Downloading…", "downloading")
+            self._set_badge("Загрузка…", "downloading")
         elif is_active and cached:
-            self._set_badge("Active", "active")
+            self._set_badge("Выбрана", "active")
         elif cached:
-            self._set_badge("Downloaded", "downloaded")
+            self._set_badge("Установлена", "downloaded")
         else:
-            self._set_badge("Not downloaded", "idle")
+            self._set_badge("Не скачана", "idle")
 
         self.download_button.setVisible(not cached)
         self.download_button.setEnabled(
@@ -332,12 +384,12 @@ class ModelRowWidget(QFrame):
         )
         if downloads_blocked:
             self.download_button.setToolTip(
-                "Downloads are disabled by HF_HUB_OFFLINE"
+                "Загрузка моделей отключена"
             )
         elif download_slot_busy and not downloading:
-            self.download_button.setToolTip("Another download is in progress")
+            self.download_button.setToolTip("Уже загружается другая модель")
         else:
-            self.download_button.setToolTip("")
+            self.download_button.setToolTip("Загрузить модель")
 
         self.set_active_button.setVisible(cached and not is_active)
         self.set_active_button.setEnabled(not downloading)
@@ -345,7 +397,9 @@ class ModelRowWidget(QFrame):
         self.delete_button.setVisible(cached)
         self.delete_button.setEnabled(not is_loaded and not downloading)
         self.delete_button.setToolTip(
-            "In use — switch models first" if is_loaded else ""
+            "Модель используется — выберите другую"
+            if is_loaded
+            else "Удалить модель"
         )
 
     def matches_filter(self, text: str) -> bool:

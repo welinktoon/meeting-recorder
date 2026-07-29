@@ -62,6 +62,8 @@ class ApplicationController(QObject):
     model_download_finished = pyqtSignal(str, bool)
     model_deleted = pyqtSignal(str, bool, str)
     model_cache_changed = pyqtSignal()
+    codex_improvement_completed = pyqtSignal(str, str)
+    codex_improvement_failed = pyqtSignal(str, str)
 
     def __init__(self, ui_controller, local_backend: Optional[LocalWhisperBackend] = None):
         super().__init__()
@@ -84,6 +86,8 @@ class ApplicationController(QObject):
         self._pending_audio_path: Optional[str] = None
         self._pending_audio_duration: Optional[float] = None
         self._pending_file_size: Optional[int] = None
+        self._pending_screen_path: Optional[str] = None
+        self.screen_recorder = None
         self._transcription_start_time: Optional[float] = None
 
         # Debounced, background whisper reload. The ~1s model swap (cleanup +
@@ -147,6 +151,7 @@ class ApplicationController(QObject):
         self.ui_controller.on_model_delete_requested = self.request_model_delete
         self.ui_controller.get_loaded_local_model = self.get_loaded_local_model
         self.ui_controller.on_dictation_transcribe = self.transcribe_clip
+        self.ui_controller.on_codex_improve = self.improve_transcript_with_codex
 
     def reload_whisper_model(self) -> None:
         """Schedule a debounced, background reload of the local whisper model.
@@ -159,7 +164,7 @@ class ApplicationController(QObject):
         backend = self.current_backend
         if self.recorder.is_recording or getattr(backend, "is_transcribing", False):
             logger.info("Ignoring whisper reload: recording/transcribing in progress")
-            self.status_update.emit("Finish recording before changing the engine")
+            self.status_update.emit("Сначала остановите запись")
             self.engine_busy_changed.emit(False)
             return
 
@@ -174,7 +179,7 @@ class ApplicationController(QObject):
 
         self._reload_in_flight = True
         self.engine_busy_changed.emit(True)
-        self.status_update.emit("Reloading whisper engine...")
+        self.status_update.emit("Загрузка модели…")
         self.executor.submit(self._reload_worker)
 
     def _reload_worker(self) -> None:
@@ -197,18 +202,18 @@ class ApplicationController(QObject):
                     # Cache-first load found no local copy; route through the
                     # consent flow instead of downloading silently.
                     self.status_update.emit(
-                        f"Model '{local_backend.model_name}' is not downloaded"
+                        f"Модель «{local_backend.model_name}» не установлена"
                     )
                     self.ensure_local_model_available()
                 else:
-                    self.status_update.emit("Whisper engine ready")
+                    self.status_update.emit("Модель готова")
                     logger.info(f"Whisper reloaded: {info}")
             else:
                 logger.warning("Local whisper backend not found")
-                self.status_update.emit("Ready")
+                self.status_update.emit("Готово")
         except Exception as exc:
             logger.error(f"Whisper reload failed: {exc}")
-            self.status_update.emit("Engine reload failed")
+            self.status_update.emit("Не удалось загрузить модель")
         finally:
             self._reload_in_flight = False
             self.engine_busy_changed.emit(False)
@@ -334,13 +339,13 @@ class ApplicationController(QObject):
             loaded = getattr(backend, "last_loaded_model", None)
             if loaded and resolve_model_repo(loaded) == resolve_model_repo(model_name):
                 self.model_deleted.emit(
-                    model_name, False, "Model is in use — switch models first"
+                    model_name, False, "Модель используется — сначала выберите другую"
                 )
                 return
 
         if not hf_access_coordinator.begin_request(model_name):
             self.model_deleted.emit(
-                model_name, False, "A download for this model is in progress"
+                model_name, False, "Модель сейчас загружается"
             )
             return
 
@@ -353,13 +358,13 @@ class ApplicationController(QObject):
         except (PermissionError, OSError) as exc:
             logger.error(f"Model delete failed for '{model_name}': {exc}")
             self.model_deleted.emit(
-                model_name, False, "Files are in use by another process"
+                model_name, False, "Файлы используются другим процессом"
             )
         except Exception as exc:
             logger.error(f"Model delete failed for '{model_name}': {exc}")
             self.model_deleted.emit(model_name, False, str(exc))
         else:
-            self.status_update.emit(f"Model '{model_name}' deleted")
+            self.status_update.emit(f"Модель «{model_name}» удалена")
             self.model_deleted.emit(model_name, True, "")
             self.model_cache_changed.emit()
         finally:
@@ -385,7 +390,7 @@ class ApplicationController(QObject):
         if env_blocked:
             hf_access_coordinator.end_request(model_name)
             self.status_update.emit(
-                f"Model '{model_name}' unavailable — downloads disabled by HF_HUB_OFFLINE"
+                f"Модель «{model_name}» недоступна — загрузка отключена"
             )
             return
 
@@ -401,7 +406,7 @@ class ApplicationController(QObject):
         else:  # canceled: no network activity
             hf_access_coordinator.end_request(model_name)
             self.status_update.emit(
-                f"Model '{model_name}' is unavailable — download declined"
+                f"Модель «{model_name}» недоступна — загрузка отменена"
             )
             if load_into_engine:
                 # A declined Model Manager download must not touch the
@@ -475,14 +480,14 @@ class ApplicationController(QObject):
                     logger.warning(
                         f"Fetch of '{model_name}' aborted: access decision {decision}"
                     )
-                    self.status_update.emit(f"Model '{model_name}' is unavailable")
+                    self.status_update.emit(f"Модель «{model_name}» недоступна")
                     return
                 if decision == AccessDecision.DOWNLOAD_ALLOWED:
                     self.status_update.emit(
-                        f"Downloading model '{model_name}' from Hugging Face..."
+                        f"Загрузка модели «{model_name}»…"
                     )
                     download_model_files(model_name)
-                    self.status_update.emit(f"Model '{model_name}' downloaded")
+                    self.status_update.emit(f"Модель «{model_name}» установлена")
                 success = True
                 # Bridge: fetching the currently-missing selected model also
                 # revives the engine (now a pure cache hit, no consent re-entry).
@@ -494,34 +499,34 @@ class ApplicationController(QObject):
                     backend.reload_model(model_name)
                     if backend.is_available():
                         self.device_info_update.emit(backend.device_info)
-                        self.status_update.emit("Whisper engine ready")
+                        self.status_update.emit("Модель готова")
                 return
 
             if decision == AccessDecision.LOAD_CACHED:
-                self.status_update.emit(f"Loading model '{model_name}'...")
+                self.status_update.emit(f"Загрузка модели «{model_name}»…")
                 backend.reload_model(model_name)
             elif decision == AccessDecision.DOWNLOAD_ALLOWED:
                 self.status_update.emit(
-                    f"Downloading model '{model_name}' from Hugging Face..."
+                    f"Загрузка модели «{model_name}»…"
                 )
                 backend.download_and_load()
             else:
                 logger.warning(
                     f"Model task for '{model_name}' aborted: access decision {decision}"
                 )
-                self.status_update.emit(f"Model '{model_name}' is unavailable")
+                self.status_update.emit(f"Модель «{model_name}» недоступна")
                 return
 
             if backend.is_available():
                 success = True
                 self.device_info_update.emit(backend.device_info)
-                self.status_update.emit("Whisper engine ready")
+                self.status_update.emit("Модель готова")
                 logger.info(f"Model '{model_name}' ready: {backend.device_info}")
             else:
-                self.status_update.emit(f"Model '{model_name}' failed to load")
+                self.status_update.emit(f"Не удалось загрузить модель «{model_name}»")
         except Exception as exc:
             logger.error(f"Model download/load failed for '{model_name}': {exc}")
-            self.status_update.emit(f"Model download failed: {exc}")
+            self.status_update.emit(f"Ошибка загрузки модели: {exc}")
         finally:
             hf_access_coordinator.end_request(model_name)
             self.model_download_finished.emit(model_name, success)
@@ -536,7 +541,7 @@ class ApplicationController(QObject):
 
         if self.recorder.is_recording:
             logger.warning("Cannot change audio device while recording")
-            self.ui_controller.set_status("Stop recording before changing device")
+            self.ui_controller.set_status("Сначала остановите запись")
             return
 
         self.recorder.cleanup()
@@ -545,7 +550,7 @@ class ApplicationController(QObject):
 
         device_name = "System Default" if device_id is None else f"Device {device_id}"
         logger.info(f"Audio device changed to: {device_name}")
-        self.ui_controller.set_status("Audio device changed")
+        self.ui_controller.set_status("Устройство изменено")
 
     def update_hotkeys(self, hotkeys: Dict[str, str]) -> None:
         self.hotkey_runtime.update_hotkeys(hotkeys)
@@ -612,6 +617,19 @@ class ApplicationController(QObject):
         """Transcribe an uploaded audio file (UI callback target)."""
         self.transcription_runtime.upload_audio_file(audio_path)
 
+    def improve_transcript_with_codex(
+        self,
+        audio_path: str,
+        transcript: str,
+        history_entry_id: str = "",
+    ) -> None:
+        """Improve a saved transcript on explicit user request."""
+        self.transcription_runtime.improve_existing_transcript(
+            audio_path,
+            transcript,
+            history_entry_id,
+        )
+
     def on_model_changed(self, model_name: str) -> None:
         """Switch the active transcription backend (UI callback target)."""
         self.transcription_runtime.on_model_changed(model_name)
@@ -636,6 +654,12 @@ class ApplicationController(QObject):
         )
         self.model_deleted.connect(self.ui_controller.on_model_deleted)
         self.model_cache_changed.connect(self.ui_controller.refresh_model_manager)
+        self.codex_improvement_completed.connect(
+            self.transcription_runtime.on_codex_improvement_complete
+        )
+        self.codex_improvement_failed.connect(
+            self.transcription_runtime.on_codex_improvement_error
+        )
         self.model_cache_changed.connect(
             self.ui_controller.refresh_local_engine_controls
         )

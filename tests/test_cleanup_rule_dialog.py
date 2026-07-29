@@ -27,9 +27,9 @@ class TestCleanupRuleDialogChoice(_QtTestCase):
             original="always spell my name Alex",
         )
         labels = self._labels(dialog)
-        self.assertIn("Use Polished (Recommended)", labels)
-        self.assertIn("Use Exactly as Typed", labels)
-        self.assertNotIn("Save Rule", labels)
+        self.assertIn("Использовать улучшенный", labels)
+        self.assertIn("Сохранить исходный текст", labels)
+        self.assertNotIn("Сохранить правило", labels)
         self.assertTrue(dialog._offer_choice)
         self.assertEqual(
             dialog.rule_edit.toPlainText(),
@@ -42,7 +42,7 @@ class TestCleanupRuleDialogChoice(_QtTestCase):
             original="always spell my name Alex",
         )
         for btn in dialog.findChildren(QPushButton):
-            if btn.text() == "Use Exactly as Typed":
+            if btn.text() == "Сохранить исходный текст":
                 btn.click()
                 break
         self.assertEqual(dialog.result(), dialog.DialogCode.Accepted)
@@ -55,7 +55,7 @@ class TestCleanupRuleDialogChoice(_QtTestCase):
         )
         dialog.rule_edit.setPlainText("Custom polished edit")
         for btn in dialog.findChildren(QPushButton):
-            if btn.text() == "Use Polished (Recommended)":
+            if btn.text() == "Использовать улучшенный":
                 btn.click()
                 break
         self.assertEqual(dialog.result(), dialog.DialogCode.Accepted)
@@ -68,8 +68,8 @@ class TestCleanupRuleDialogChoice(_QtTestCase):
             notice="AI polish unavailable — your wording will be saved as written.",
         )
         labels = self._labels(dialog)
-        self.assertIn("Save Rule", labels)
-        self.assertNotIn("Use Polished (Recommended)", labels)
+        self.assertIn("Сохранить правило", labels)
+        self.assertNotIn("Использовать улучшенный", labels)
         self.assertFalse(dialog._offer_choice)
 
     def test_identical_texts_skip_choice(self):
@@ -78,10 +78,10 @@ class TestCleanupRuleDialogChoice(_QtTestCase):
             original="Keep acronyms uppercase.",
         )
         self.assertFalse(dialog._offer_choice)
-        self.assertIn("Save Rule", self._labels(dialog))
+        self.assertIn("Сохранить правило", self._labels(dialog))
 
     def test_edit_mode_has_no_choice(self):
         dialog = CleanupRuleDialog("Existing rule text")
         self.assertFalse(dialog._offer_choice)
-        self.assertIn("Save Rule", self._labels(dialog))
-        self.assertEqual(dialog.windowTitle(), "Edit Learned Rule")
+        self.assertIn("Сохранить правило", self._labels(dialog))
+        self.assertEqual(dialog.windowTitle(), "Изменение правила")

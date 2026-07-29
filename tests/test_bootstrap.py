@@ -36,6 +36,7 @@ class _FakeUIController:
     def __init__(self):
         self.main_window = object()
         self.show_main_window_called = False
+        self.update_check_scheduled = False
         self.device_info = None
         self.cleaned_up = False
 
@@ -44,6 +45,9 @@ class _FakeUIController:
 
     def set_device_info(self, device_info):
         self.device_info = device_info
+
+    def schedule_startup_update_check(self):
+        self.update_check_scheduled = True
 
     def cleanup(self):
         self.cleaned_up = True
@@ -128,12 +132,17 @@ class TestBootstrap(unittest.TestCase):
             bootstrap,
             "get_late_runtime_components",
             side_effect=get_late_runtime_components,
+        ), patch.object(
+            bootstrap,
+            "acquire_single_instance",
+            return_value=True,
         ):
             result = bootstrap.main()
 
         self.assertEqual(result, 123)
         self.assertTrue(loading_screen.destroyed)
         self.assertTrue(ui_controller.show_main_window_called)
+        self.assertTrue(ui_controller.update_check_scheduled)
         self.assertEqual(ui_controller.device_info, "cuda")
         self.assertEqual(len(_FakeApplicationController.instances), 1)
         self.assertTrue(_FakeApplicationController.instances[0].cleaned_up)
@@ -167,6 +176,10 @@ class TestBootstrap(unittest.TestCase):
             bootstrap,
             "get_late_runtime_components",
             return_value=(lambda: ui_controller, _FakeApplicationController),
+        ), patch.object(
+            bootstrap,
+            "acquire_single_instance",
+            return_value=True,
         ):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 bootstrap.main()

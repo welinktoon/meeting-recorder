@@ -294,6 +294,25 @@ class DatabaseManager:
         with self.get_session() as session:
             return session.get(TranscriptionHistory, entry_id)
 
+    def update_history_entry_cleanup(
+        self,
+        entry_id: str,
+        text: str,
+        raw_text: str,
+        cleanup_provider: str,
+        cleanup_model: str,
+    ) -> bool:
+        """Attach a cleaned transcript to an existing history entry."""
+        with self.get_session() as session:
+            entry = session.get(TranscriptionHistory, entry_id)
+            if entry is None:
+                return False
+            entry.text = text
+            entry.raw_text = raw_text
+            entry.cleanup_provider = cleanup_provider
+            entry.cleanup_model = cleanup_model
+            return True
+
     def delete_history_entry(self, entry_id: str) -> bool:
         with self.get_session() as session:
             entry = session.get(TranscriptionHistory, entry_id)

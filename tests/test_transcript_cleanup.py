@@ -206,7 +206,7 @@ class TestTranscriptCleanupSettings(unittest.TestCase):
         )
         self.assertFalse(config.TRANSCRIPT_CLEANUP_ENABLED)
         self.assertEqual(config.TRANSCRIPT_CLEANUP_TIMEOUT_S, 8.0)
-        self.assertIn("speech-to-text", config.TRANSCRIPT_CLEANUP_PROMPT)
+        self.assertIn("расшифровки", config.TRANSCRIPT_CLEANUP_PROMPT)
 
     def test_save_and_load_cleanup_setting(self):
         import os

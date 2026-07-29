@@ -21,10 +21,10 @@ class QuickRecordTab(TranscriptionTabBase):
     record_canceled = pyqtSignal()
 
     CONTENT_OBJECT_NAME = "quickRecordContent"
-    INITIAL_STATUS = "Ready to record"
+    INITIAL_STATUS = "Готово к записи"
     TRANSCRIPT_PLACEHOLDER = (
-        "Transcription will appear here...\n"
-        "Start recording to begin."
+        "Здесь появится расшифровка.\n"
+        "Начните запись."
     )
 
     def __init__(self, parent=None):
@@ -42,10 +42,10 @@ class QuickRecordTab(TranscriptionTabBase):
         control_panel = ControlPanel()
         control_panel.layout.setSpacing(12)
 
-        self.record_button = SuccessButton("Start Recording")
-        self.cancel_button = WarningButton("Cancel")
+        self.record_button = SuccessButton("Начать запись")
+        self.cancel_button = WarningButton("Отмена")
         self.cancel_button.set_active(False)
-        self.stop_button = DangerButton("Stop")
+        self.stop_button = DangerButton("Остановить")
         self.stop_button.set_active(False)
 
         buttons_widget = QWidget()
@@ -104,20 +104,20 @@ class QuickRecordTab(TranscriptionTabBase):
         """Update button states based on recording status."""
         if self.is_recording:
             self.record_button.set_active(False)
-            self.record_button.setText("Recording...")
+            self.record_button.setText("Идёт запись…")
             self.stop_button.set_active(True)
             self.cancel_button.set_active(True)
             self.model_combo.setEnabled(False)
             self.local_engine.set_busy(True)
-            self.status_label.setText("Recording in progress...")
+            self.status_label.setText("Идёт запись…")
         else:
             self.record_button.set_active(True)
-            self.record_button.setText("Start Recording")
+            self.record_button.setText("Начать запись")
             self.stop_button.set_active(False)
             self.cancel_button.set_active(False)
             self.model_combo.setEnabled(True)
             self.local_engine.set_busy(False)
-            self.status_label.setText("Ready to record")
+            self.status_label.setText("Готово к записи")
 
     # Public API methods
 

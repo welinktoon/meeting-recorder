@@ -332,7 +332,7 @@ class SplitButton(Button):
     """
 
     _ZONE_WIDTH = 34
-    # Matches the QPushButton border-radius in theme.qss so the hover
+    # Matches the QPushButton border-radius in the shared themes so the hover
     # overlay on the dropdown zone follows the button's rounded corners.
     _CORNER_RADIUS = 8
 

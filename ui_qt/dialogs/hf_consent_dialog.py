@@ -47,7 +47,7 @@ class HuggingFaceConsentDialog(QDialog):
         self.env_blocked = env_blocked
         self.result_action = self.RESULT_CANCEL
 
-        self.setWindowTitle("Download Whisper Model")
+        self.setWindowTitle("Загрузка модели Whisper")
         self.setMinimumWidth(460)
         self.setModal(True)
 
@@ -59,7 +59,7 @@ class HuggingFaceConsentDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
 
-        title = QLabel(f'Download "{self.model_name}" model?')
+        title = QLabel(f'Загрузить модель «{self.model_name}»?')
         title.setObjectName("headerLabel")
         layout.addWidget(title)
 
@@ -69,8 +69,8 @@ class HuggingFaceConsentDialog(QDialog):
         layout.addWidget(body)
 
         storage_note = QLabel(
-            "Model files are stored locally on this computer. Once downloaded, "
-            "this model works fully offline."
+            "Файлы модели хранятся локально на этом компьютере. После загрузки "
+            "модель работает полностью без интернета."
         )
         storage_note.setObjectName("infoLabel")
         storage_note.setWordWrap(True)
@@ -82,32 +82,32 @@ class HuggingFaceConsentDialog(QDialog):
         button_layout.addStretch()
 
         if self.env_blocked:
-            close_btn = Button("Close")
+            close_btn = Button("Закрыть")
             close_btn.setObjectName("consentCloseButton")
             close_btn.clicked.connect(self.reject)
             button_layout.addWidget(close_btn)
         else:
-            cancel_btn = Button("Cancel")
+            cancel_btn = Button("Отмена")
             cancel_btn.setObjectName("consentCancelButton")
             cancel_btn.clicked.connect(self.reject)
             button_layout.addWidget(cancel_btn)
 
             if self.policy == HuggingFaceAccessPolicy.NEVER:
-                settings_btn = Button("Open Settings")
+                settings_btn = Button("Открыть настройки")
                 settings_btn.setObjectName("consentOpenSettingsButton")
                 settings_btn.clicked.connect(
                     lambda: self._finish(self.RESULT_OPEN_SETTINGS)
                 )
                 button_layout.addWidget(settings_btn)
             else:
-                always_btn = Button("Always allow")
+                always_btn = Button("Разрешать всегда")
                 always_btn.setObjectName("consentAlwaysAllowButton")
                 always_btn.clicked.connect(
                     lambda: self._finish(self.RESULT_ALWAYS_ALLOW)
                 )
                 button_layout.addWidget(always_btn)
 
-            download_btn = PrimaryButton("Download once")
+            download_btn = PrimaryButton("Загрузить один раз")
             download_btn.setObjectName("consentDownloadOnceButton")
             download_btn.clicked.connect(
                 lambda: self._finish(self.RESULT_DOWNLOAD_ONCE)
@@ -121,26 +121,24 @@ class HuggingFaceConsentDialog(QDialog):
         """Compose the explanatory copy for the current state."""
         repo = resolve_model_repo(self.model_name)
         lines = [
-            f'The Whisper model "{self.model_name}" is not on this computer.',
-            f"It can be downloaded from Hugging Face (huggingface.co), "
-            f"repository {repo}.",
+            f'Модель Whisper «{self.model_name}» не установлена на этом компьютере.',
+            f"Её можно загрузить с Hugging Face (huggingface.co), "
+            f"репозиторий {repo}.",
         ]
 
         size = format_download_size(self.model_name)
         if size:
-            lines.append(f"Approximate download size: {size}.")
+            lines.append(f"Примерный размер загрузки: {size}.")
 
         if self.env_blocked:
             lines.append(
-                "Downloads are currently disabled by the HF_HUB_OFFLINE "
-                "environment variable set outside this application. Unset it "
-                "and restart to allow downloads."
+                "Загрузки отключены внешней переменной HF_HUB_OFFLINE. "
+                "Уберите её и перезапустите приложение, чтобы разрешить загрузку."
             )
         elif self.policy == HuggingFaceAccessPolicy.NEVER:
             lines.append(
-                'Your settings are set to "Never connect" to Hugging Face. '
-                "You can allow this one download, or change the policy in "
-                "Settings."
+                "В настройках запрещено подключение к Hugging Face. "
+                "Можно разрешить одну загрузку или изменить это правило в настройках."
             )
 
         return "\n\n".join(lines)
