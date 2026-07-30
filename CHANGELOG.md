@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed in 1.0.2
+- Changing the recordings folder now applies to the running application and immediately scans existing meetings.
+- The settings save action appears only when there are unsaved changes; the redundant cancel action was removed.
+- The Windows installer now offers checked options for Desktop and Start menu shortcuts.
+- Removed audio-format controls that were visible but not connected to the recorder.
+
 ### Added
 - **Project website** - [openwhisper.fiorilabs.tech](https://openwhisper.fiorilabs.tech/)
 - **Model Technical Profiles** - Model Manager tiles now open bundled, offline technical profiles with model origin, practical guidance, specifications, limitations, and explicit links to the conversion and upstream model pages
