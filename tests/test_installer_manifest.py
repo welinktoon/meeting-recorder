@@ -40,3 +40,35 @@ def test_uninstaller_stops_the_running_tray_process_before_removing_files():
     assert 'Parameters: "/F /T /IM ""{#MyAppExeName}"""' in uninstall_run
     assert "Flags: runhidden waituntilterminated" in uninstall_run
     assert 'RunOnceId: "ForceStopMeetingRecorder"' in uninstall_run
+
+
+def test_windows_release_bundles_the_gpu_runtime():
+    workflow = (
+        PROJECT_ROOT / ".github" / "workflows" / "windows-release.yml"
+    ).read_text(encoding="utf-8")
+    build_script = (
+        PROJECT_ROOT / "scripts" / "build_windows.ps1"
+    ).read_text(encoding="utf-8")
+    spec = (
+        PROJECT_ROOT / "packaging" / "meeting-recorder.spec"
+    ).read_text(encoding="utf-8")
+    entrypoint = (PROJECT_ROOT / "app_qt.py").read_text(encoding="utf-8")
+
+    assert "-r requirements-gpu.txt" in workflow
+    assert "  pull_request:" in workflow
+    assert "-r requirements-gpu.txt" in build_script
+    assert "Required CUDA runtime DLL was not bundled" in build_script
+    for dll_name in (
+        "cublas64_12.dll",
+        "cudart64_12.dll",
+        "cudnn64_9.dll",
+    ):
+        assert f'"{dll_name}"' in build_script
+    for package_name in (
+        "nvidia.cublas",
+        "nvidia.cuda_nvrtc",
+        "nvidia.cuda_runtime",
+        "nvidia.cudnn",
+    ):
+        assert f'"{package_name}"' in spec
+    assert 'getattr(sys, "_MEIPASS", None)' in entrypoint

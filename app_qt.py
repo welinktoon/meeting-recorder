@@ -35,6 +35,9 @@ def _register_cuda_dll_directories() -> None:
         return
 
     search_roots = []
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        search_roots.append(Path(frozen_root))
     for site_dir in site.getsitepackages():
         search_roots.append(Path(site_dir))
     user_site = site.getusersitepackages()

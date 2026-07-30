@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed in 1.0.4
+- The Windows release now bundles the CUDA 12 runtime libraries required by CTranslate2 instead of detecting an NVIDIA GPU and failing on the first transcription.
+- CUDA inference failures now retry once on CPU/int8, so recordings are still transcribed when the GPU runtime or driver is incompatible.
+
 ### Fixed in 1.0.3
 - Uninstalling on Windows now gracefully exits the tray application, with a forced process-tree fallback for unresponsive or older builds.
 - Changing the recordings folder now applies to the running application and immediately scans existing meetings.
