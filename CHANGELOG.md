@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed in 1.0.2
+### Fixed in 1.0.3
 - Changing the recordings folder now applies to the running application and immediately scans existing meetings.
 - The settings save action appears only when there are unsaved changes; the redundant cancel action was removed.
 - The Windows installer now offers checked options for Desktop and Start menu shortcuts.

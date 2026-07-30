@@ -17,6 +17,8 @@ def test_installer_offers_standard_shortcut_choices():
     assert 'Description: "Добавить в меню «Пуск»"' in manifest
     assert 'Tasks: desktopicon' in manifest
     assert manifest.count("Tasks: startmenuicon") == 2
+    assert 'Filename: "{uninstallexe}"' in manifest
+    assert "{uninstalexe}" not in manifest
     desktop_task = next(
         line for line in manifest.splitlines()
         if 'Name: "desktopicon"' in line

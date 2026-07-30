@@ -50,7 +50,7 @@ Source: "{#ProjectRoot}\dist\MeetingRecorder\*"; DestDir: "{app}"; Flags: ignore
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startmenuicon
-Name: "{group}\Удалить {#MyAppName}"; Filename: "{uninstalexe}"; Tasks: startmenuicon
+Name: "{group}\Удалить {#MyAppName}"; Filename: "{uninstallexe}"; Tasks: startmenuicon
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
