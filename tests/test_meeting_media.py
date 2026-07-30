@@ -223,6 +223,27 @@ def test_media_scan_finds_audio_video_and_groups_sidecars():
         assert any(item.filename == "Созвон.mp3" for item in media)
 
 
+def test_switching_recordings_folder_scans_existing_meetings_immediately():
+    with tempfile.TemporaryDirectory() as first_directory, tempfile.TemporaryDirectory() as second_directory:
+        second = Path(second_directory)
+        nested = second / "Архив"
+        nested.mkdir()
+        _write_wav(second / "Планёрка.wav", 1)
+        (nested / "Демонстрация.webm").write_bytes(b"video")
+        manager = HistoryManager(
+            recordings_folder=first_directory,
+            max_recordings=None,
+        )
+
+        meetings_found = manager.set_recordings_folder(second_directory)
+
+        assert meetings_found == 2
+        assert manager.recordings_folder == os.path.abspath(second_directory)
+        assert {
+            meeting.filename for meeting in manager.get_media_files()
+        } == {"Планёрка.wav", "Демонстрация.webm"}
+
+
 def test_media_scan_attaches_the_best_existing_transcript():
     with tempfile.TemporaryDirectory() as directory:
         folder = Path(directory)

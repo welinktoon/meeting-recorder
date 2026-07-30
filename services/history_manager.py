@@ -356,6 +356,28 @@ class HistoryManager:
             self.max_recordings if self.max_recordings is not None else "all",
         )
 
+    def set_recordings_folder(self, folder: str) -> int:
+        """Apply a recordings folder and return the meetings found there.
+
+        Settings can change while the application is running. Keeping this
+        transition inside the manager prevents the UI from updating only the
+        persisted path while the live library continues scanning the old one.
+        """
+        if not folder or not str(folder).strip():
+            raise ValueError("Recordings folder cannot be empty")
+        normalized = os.path.abspath(
+            os.path.expandvars(os.path.expanduser(os.fspath(folder).strip()))
+        )
+        os.makedirs(normalized, exist_ok=True)
+        self.recordings_folder = normalized
+        meetings_found = len(self.get_media_files())
+        logger.info(
+            "Recordings folder changed to %s (%d meetings found)",
+            normalized,
+            meetings_found,
+        )
+        return meetings_found
+
     def _cleanup_stale_auxiliary_files(self) -> None:
         """Remove abandoned loopback WAV files left by an earlier crash."""
         cutoff = time.time() - 60

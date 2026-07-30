@@ -10,7 +10,7 @@ from typing import Optional, Callable
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QTabWidget,
     QWidget, QLabel, QCheckBox,
-    QSlider, QFrame, QScrollArea, QTextEdit,
+    QFrame, QScrollArea, QTextEdit,
     QLineEdit, QListWidget, QFileDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -85,6 +85,7 @@ class SettingsDialog(QDialog):
         self.setMaximumWidth(800)
         self.resize(760, 700)
         self._embedded_mode = False
+        self._saved_form_state = None
 
         # Callbacks
         self.on_settings_save: Optional[Callable] = None
@@ -115,6 +116,7 @@ class SettingsDialog(QDialog):
         self._setup_ui()
         self._localize_russian()
         self._load_settings()
+        self._connect_dirty_tracking()
 
         self._cleanup_models_loaded.connect(self._on_cleanup_models_loaded)
         self._cleanup_rule_polished.connect(self._on_cleanup_rule_polished)
@@ -224,22 +226,21 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(self.tabs)
 
-        # Button layout
-        button_layout = QHBoxLayout()
+        # Saving is an action bar, not a permanent footer. It appears only
+        # while the form differs from the last successfully saved state.
+        self.save_bar = QWidget()
+        self.save_bar.setObjectName("settingsSaveBar")
+        button_layout = QHBoxLayout(self.save_bar)
         button_layout.setContentsMargins(24, 18, 24, 18)
         button_layout.setSpacing(10)
 
         button_layout.addStretch()
 
-        self.cancel_btn = Button("Cancel")
-        self.cancel_btn.clicked.connect(self._cancel_or_close)
-        button_layout.addWidget(self.cancel_btn)
-
         self.save_btn = PrimaryButton("Save Settings")
         self.save_btn.clicked.connect(self._save_settings)
         button_layout.addWidget(self.save_btn)
 
-        layout.addLayout(button_layout)
+        layout.addWidget(self.save_bar)
 
     def set_embedded_mode(self, enabled: bool = True):
         """Display settings as a page inside the main workspace."""
@@ -289,40 +290,6 @@ class SettingsDialog(QDialog):
         self.audio_device_combo.setMinimumHeight(36)
         self._populate_audio_devices()
         layout.addWidget(self.audio_device_combo)
-
-        format_row = QHBoxLayout()
-        format_row.setSpacing(12)
-        sample_column = QVBoxLayout()
-        sample_column.setSpacing(8)
-        sample_column.addWidget(QLabel("Частота, Гц"))
-        self.sample_rate_combo = NoWheelComboBox()
-        self.sample_rate_combo.addItems(["16000", "22050", "44100", "48000"])
-        self.sample_rate_combo.setMinimumHeight(36)
-        sample_column.addWidget(self.sample_rate_combo)
-        format_row.addLayout(sample_column, stretch=1)
-
-        channels_column = QVBoxLayout()
-        channels_column.setSpacing(8)
-        channels_column.addWidget(QLabel("Каналы"))
-        self.channels_combo = NoWheelComboBox()
-        self.channels_combo.addItems(["Mono (1)", "Stereo (2)"])
-        self.channels_combo.setMinimumHeight(36)
-        channels_column.addWidget(self.channels_combo)
-        format_row.addLayout(channels_column, stretch=1)
-        layout.addLayout(format_row)
-
-        layout.addWidget(QLabel("Порог тишины"))
-        threshold_layout = QHBoxLayout()
-        self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.threshold_slider.setRange(0, 100)
-        self.threshold_slider.setValue(10)
-        self.threshold_value_label = QLabel("0.01")
-        self.threshold_value_label.setObjectName("accentLabel")
-        self.threshold_value_label.setMaximumWidth(50)
-        self.threshold_slider.valueChanged.connect(self._update_threshold_display)
-        threshold_layout.addWidget(self.threshold_slider)
-        threshold_layout.addWidget(self.threshold_value_label)
-        layout.addLayout(threshold_layout)
 
         layout.addSpacing(16)
         layout.addWidget(self._section_label("Видео встречи"))
@@ -952,11 +919,6 @@ class SettingsDialog(QDialog):
         self.update_status_label.setText(message)
         self.check_updates_button.setEnabled(not busy)
 
-    def _update_threshold_display(self, value):
-        """Update threshold value display."""
-        threshold = value / 1000.0
-        self.threshold_value_label.setText(f"{threshold:.3f}")
-
     def _update_recording_retention_ui(self):
         """Enable the custom count spinbox only when Custom is selected."""
         is_custom = (
@@ -1421,6 +1383,107 @@ class SettingsDialog(QDialog):
         if selected:
             self.recordings_folder_edit.setText(selected)
 
+    def _connect_dirty_tracking(self):
+        """Show the save action only while persisted settings have changed."""
+        checkboxes = [
+            self.auto_paste_check,
+            self.copy_clipboard_check,
+            self.codex_cleanup_check,
+            self.transcript_cleanup_check,
+            self.minimize_tray_check,
+            self.streaming_enabled_check,
+            self.video_recording_enabled_check,
+            *self.overlay_state_checks.values(),
+        ]
+        for checkbox in checkboxes:
+            checkbox.toggled.connect(self._update_save_bar_visibility)
+
+        combos = [
+            self.audio_device_combo,
+            self.codex_mode_combo,
+            self.codex_trigger_combo,
+            self.cleanup_provider_combo,
+            self.cleanup_model_sort_combo,
+            self.cleanup_model_combo,
+            self.cleanup_reasoning_combo,
+            self.hf_policy_combo,
+            self.recording_retention_combo,
+            self.video_quality_combo,
+        ]
+        for combo in combos:
+            combo.currentTextChanged.connect(self._update_save_bar_visibility)
+
+        for spinbox in (
+            self.streaming_font_size_spinbox,
+            self.max_recordings_spinbox,
+            self.video_fps_spinbox,
+        ):
+            spinbox.valueChanged.connect(self._update_save_bar_visibility)
+
+        self.cleanup_prompt_edit.textChanged.connect(
+            self._update_save_bar_visibility
+        )
+        self.recordings_folder_edit.textChanged.connect(
+            self._update_save_bar_visibility
+        )
+        rules_model = self.cleanup_rules_list.model()
+        rules_model.rowsInserted.connect(self._update_save_bar_visibility)
+        rules_model.rowsRemoved.connect(self._update_save_bar_visibility)
+        rules_model.dataChanged.connect(self._update_save_bar_visibility)
+        rules_model.modelReset.connect(self._update_save_bar_visibility)
+
+    @staticmethod
+    def _normalized_folder(path: str) -> str:
+        """Return a stable absolute representation for comparisons and saves."""
+        return os.path.normcase(
+            os.path.abspath(
+                os.path.expandvars(
+                    os.path.expanduser(path or config.RECORDINGS_FOLDER)
+                )
+            )
+        )
+
+    def _collect_form_state(self):
+        """Collect only controls that are backed by real persisted behavior."""
+        return {
+            "auto_paste": self.auto_paste_check.isChecked(),
+            "copy_clipboard": self.copy_clipboard_check.isChecked(),
+            "codex_cleanup": self.codex_cleanup_check.isChecked(),
+            "codex_mode": self.codex_mode_combo.currentData(),
+            "codex_trigger": self.codex_trigger_combo.currentData(),
+            "transcript_cleanup": self.transcript_cleanup_check.isChecked(),
+            "cleanup_provider": self.cleanup_provider_combo.currentData(),
+            "cleanup_model": self.cleanup_model_combo.currentText().strip(),
+            "cleanup_model_sort": self.cleanup_model_sort_combo.currentData(),
+            "cleanup_reasoning": self.cleanup_reasoning_combo.currentData(),
+            "cleanup_prompt": self.cleanup_prompt_edit.toPlainText().strip(),
+            "cleanup_rules": tuple(self._staged_cleanup_rules()),
+            "minimize_tray": self.minimize_tray_check.isChecked(),
+            "streaming": self.streaming_enabled_check.isChecked(),
+            "streaming_font": self.streaming_font_size_spinbox.value(),
+            "overlay_states": tuple(
+                (state, checkbox.isChecked())
+                for state, checkbox in sorted(self.overlay_state_checks.items())
+            ),
+            "hf_policy": self.hf_policy_combo.currentData(),
+            "retention_mode": self.recording_retention_combo.currentData(),
+            "max_recordings": self.max_recordings_spinbox.value(),
+            "video_enabled": self.video_recording_enabled_check.isChecked(),
+            "video_fps": self.video_fps_spinbox.value(),
+            "video_quality": self.video_quality_combo.currentData(),
+            "recordings_folder": self._normalized_folder(
+                self.recordings_folder_edit.text().strip()
+            ),
+            "audio_device": self.audio_device_combo.currentData(),
+        }
+
+    def _update_save_bar_visibility(self, *_args):
+        dirty = (
+            self._saved_form_state is not None
+            and self._collect_form_state() != self._saved_form_state
+        )
+        self.save_bar.setVisible(dirty)
+
     def _open_hotkey_dialog(self):
         """Open hotkey configuration dialog."""
         logger.info("Opening hotkey configuration dialog")
@@ -1615,6 +1678,10 @@ class SettingsDialog(QDialog):
                 max(0, self.hf_policy_combo.findData(HuggingFaceAccessPolicy.ASK))
             )
 
+        self._saved_form_state = self._collect_form_state()
+        self.save_btn.setText("Сохранить")
+        self._update_save_bar_visibility()
+
     def _save_settings(self):
         """Save settings and close dialog."""
         try:
@@ -1710,11 +1777,11 @@ class SettingsDialog(QDialog):
             settings[SettingsKey.VIDEO_RECORDING_CRF] = (
                 self.video_quality_combo.currentData() or config.VIDEO_RECORDING_CRF
             )
-            chosen_folder = self.recordings_folder_edit.text().strip() or config.RECORDINGS_FOLDER
+            chosen_folder = self._normalized_folder(
+                self.recordings_folder_edit.text().strip()
+            )
             settings[SettingsKey.RECORDINGS_FOLDER] = chosen_folder
-            if chosen_folder != history_manager.recordings_folder:
-                history_manager.recordings_folder = chosen_folder
-                os.makedirs(chosen_folder, exist_ok=True)
+            os.makedirs(chosen_folder, exist_ok=True)
 
             # Save audio input device (None for system default)
             if new_audio_device is None:
@@ -1725,6 +1792,17 @@ class SettingsDialog(QDialog):
             # Save to file (policy is read live at each model request, so the
             # new hf_access_policy takes effect immediately)
             settings_manager.save_all_settings(settings)
+
+            # Switch the live library only after persistence succeeds, then
+            # scan it before notifying the main window. This guarantees that
+            # choosing an existing folder refreshes its meetings immediately.
+            recordings_folder_changed = (
+                self._normalized_folder(history_manager.recordings_folder)
+                != chosen_folder
+            )
+            meetings_found = history_manager.set_recordings_folder(
+                chosen_folder
+            )
 
             # Apply retention limit immediately (may delete oldest files if lowered)
             history_manager.set_max_recordings(resolve_max_saved_recordings(settings))
@@ -1739,16 +1817,13 @@ class SettingsDialog(QDialog):
             settings['_audio_device_changed'] = audio_device_changed
             settings['_streaming_settings_changed'] = streaming_settings_changed
             settings['_hf_policy_changed'] = hf_policy_changed
+            settings['_recordings_folder_changed'] = recordings_folder_changed
+            settings['_recordings_found'] = meetings_found
             self.settings_changed.emit(settings)
 
             if self._embedded_mode:
-                self.save_btn.setText("Сохранено")
-                QTimer.singleShot(
-                    1200,
-                    lambda: self.save_btn.setText("Сохранить")
-                    if self.save_btn
-                    else None,
-                )
+                self._saved_form_state = self._collect_form_state()
+                self._update_save_bar_visibility()
             else:
                 self.accept()
         except Exception as e:
