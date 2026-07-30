@@ -32,7 +32,10 @@ Push-Location $projectRoot
 try {
     if (-not $SkipDependencyInstall) {
         & $PythonExecutable -m pip install --upgrade pip
-        & $PythonExecutable -m pip install -r requirements.txt -r requirements-build.txt
+        & $PythonExecutable -m pip install `
+            -r requirements.txt `
+            -r requirements-gpu.txt `
+            -r requirements-build.txt
     }
 
     if (-not $SkipTests) {
@@ -50,6 +53,23 @@ try {
         (Join-Path $projectRoot "packaging\meeting-recorder.spec")
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller failed."
+    }
+
+    $distributionRoot = Join-Path $projectRoot "dist\MeetingRecorder"
+    foreach ($requiredCudaDll in @(
+        "cublas64_12.dll",
+        "cudart64_12.dll",
+        "cudnn64_9.dll"
+    )) {
+        $bundledDll = Get-ChildItem `
+            -LiteralPath $distributionRoot `
+            -Recurse `
+            -File `
+            -Filter $requiredCudaDll |
+            Select-Object -First 1
+        if (-not $bundledDll) {
+            throw "Required CUDA runtime DLL was not bundled: $requiredCudaDll"
+        }
     }
 
     $compilerCandidates = @(

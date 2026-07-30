@@ -24,7 +24,11 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt -r requirements-build.txt
+        run: >
+          python -m pip install
+          -r requirements.txt
+          -r requirements-gpu.txt
+          -r requirements-build.txt
 
       - name: Install Inno Setup
         shell: pwsh

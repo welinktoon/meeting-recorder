@@ -8,7 +8,7 @@ This backend uses faster-whisper (CTranslate2) which provides:
 - No external FFmpeg dependency (uses PyAV)
 """
 import logging
-from typing import Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple
 from faster_whisper import WhisperModel
 from .base import TranscriptionBackend
 from config import config
@@ -270,31 +270,10 @@ class LocalWhisperBackend(TranscriptionBackend):
                     min_silence_duration_ms=config.FASTER_WHISPER_VAD_MIN_SILENCE_MS
                 )
 
-            # Transcribe - returns a generator of segments and transcription info
-            segments, info = self.model.transcribe(
-                audio_path,
-                beam_size=config.FASTER_WHISPER_BEAM_SIZE,
-                vad_filter=config.FASTER_WHISPER_VAD_ENABLED,
-                vad_parameters=vad_params
+            transcript = self._run_with_cuda_fallback(
+                lambda: self._transcribe_file_once(audio_path, vad_params),
+                operation_name="transcription",
             )
-
-            logger.info(f"Detected language: {info.language} "
-                        f"(probability: {info.language_probability:.2f})")
-
-            # Iterate through segments to get transcribed text
-            # Note: segments is a generator - transcription happens as we iterate
-            text_parts = []
-            for segment in segments:
-                if self.should_cancel:
-                    logger.info("Transcription canceled by user")
-                    raise Exception("Transcription canceled")
-                text_parts.append(segment.text)
-
-            transcript = " ".join(text_parts).strip()
-
-            # Clean up extra whitespace
-            import re
-            transcript = re.sub(r'\s+', ' ', transcript)
 
             logger.info(f"Transcription complete. Length: {len(transcript)} characters")
 
@@ -306,6 +285,90 @@ class LocalWhisperBackend(TranscriptionBackend):
             raise
         finally:
             self.is_transcribing = False
+
+    def _transcribe_file_once(self, audio_path: str, vad_params: Optional[dict]) -> str:
+        """Run one complete model pass and consume its lazy segment generator."""
+        segments, info = self.model.transcribe(
+            audio_path,
+            beam_size=config.FASTER_WHISPER_BEAM_SIZE,
+            vad_filter=config.FASTER_WHISPER_VAD_ENABLED,
+            vad_parameters=vad_params,
+        )
+
+        logger.info(
+            "Detected language: %s (probability: %.2f)",
+            info.language,
+            info.language_probability,
+        )
+
+        # CTranslate2 does most inference while this generator is consumed, so
+        # CUDA errors must be caught around the iteration as well as transcribe().
+        text_parts = []
+        for segment in segments:
+            if self.should_cancel:
+                logger.info("Transcription canceled by user")
+                raise Exception("Transcription canceled")
+            text_parts.append(segment.text)
+
+        import re
+
+        return re.sub(r"\s+", " ", " ".join(text_parts).strip())
+
+    def _is_cuda_runtime_error(self, error: Exception) -> bool:
+        """Return whether a GPU failure can be retried safely on CPU."""
+        if self._device != "cuda":
+            return False
+
+        message = str(error).lower()
+        return any(
+            marker in message
+            for marker in ("cuda", "cublas", "cudnn", "cudart", "nvrtc")
+        )
+
+    def _switch_to_cpu_fallback(self) -> None:
+        """Replace the failed CUDA model with a CPU/int8 model for this session."""
+        failed_device = self._device
+        failed_compute_type = self._compute_type
+
+        self.cleanup()
+        self._device = "cpu"
+        self._compute_type = self._select_best_compute_type("cpu", "int8")
+
+        logger.warning(
+            "Reloading model '%s' on CPU after %s/%s failure",
+            self.model_name,
+            failed_device,
+            failed_compute_type,
+        )
+        self.model = WhisperModel(
+            self.model_name,
+            device=self._device,
+            compute_type=self._compute_type,
+            local_files_only=True,
+        )
+        self._last_loaded_model = self.model_name
+        self._model_missing = False
+        self.reset_cancel_flag()
+
+    def _run_with_cuda_fallback(
+        self,
+        operation: Callable[[], str],
+        operation_name: str,
+    ) -> str:
+        """Retry a failed CUDA operation once on CPU instead of losing the text."""
+        try:
+            return operation()
+        except Exception as error:
+            if not self._is_cuda_runtime_error(error):
+                raise
+
+            logger.warning(
+                "CUDA %s failed (%s). Retrying once on CPU.",
+                operation_name,
+                error,
+            )
+            self._switch_to_cpu_fallback()
+            return operation()
 
     def transcribe_chunks(self, chunk_files: List[str]) -> str:
         """Transcribe multiple audio chunk files efficiently with faster-whisper.
@@ -326,8 +389,6 @@ class LocalWhisperBackend(TranscriptionBackend):
             self.is_transcribing = True
             self.reset_cancel_flag()
 
-            transcriptions = []
-
             # Configure VAD parameters if enabled
             vad_params = None
             if config.FASTER_WHISPER_VAD_ENABLED:
@@ -335,38 +396,10 @@ class LocalWhisperBackend(TranscriptionBackend):
                     min_silence_duration_ms=config.FASTER_WHISPER_VAD_MIN_SILENCE_MS
                 )
 
-            for i, chunk_file in enumerate(chunk_files):
-                if self.should_cancel:
-                    logger.info("Chunked transcription canceled by user")
-                    raise Exception("Transcription canceled")
-
-                logger.info(f"Processing chunk {i+1}/{len(chunk_files)}: {chunk_file}")
-
-                # Transcribe individual chunk
-                segments, info = self.model.transcribe(
-                    chunk_file,
-                    beam_size=config.FASTER_WHISPER_BEAM_SIZE,
-                    vad_filter=config.FASTER_WHISPER_VAD_ENABLED,
-                    vad_parameters=vad_params
-                )
-
-                # Collect text from segments
-                text_parts = []
-                for segment in segments:
-                    if self.should_cancel:
-                        logger.info("Transcription canceled during chunk processing")
-                        raise Exception("Transcription canceled")
-                    text_parts.append(segment.text)
-
-                chunk_text = " ".join(text_parts).strip()
-                transcriptions.append(chunk_text)
-
-                logger.info(f"Chunk {i+1}/{len(chunk_files)} completed. "
-                           f"Length: {len(chunk_text)} characters")
-
-            # Combine transcriptions using audio_processor
-            from services.audio_processor import audio_processor
-            combined_text = audio_processor.combine_transcriptions(transcriptions)
+            combined_text = self._run_with_cuda_fallback(
+                lambda: self._transcribe_chunks_once(chunk_files, vad_params),
+                operation_name="chunked transcription",
+            )
 
             logger.info(f"Chunked transcription complete. "
                         f"Total length: {len(combined_text)} characters")
@@ -379,6 +412,34 @@ class LocalWhisperBackend(TranscriptionBackend):
             raise
         finally:
             self.is_transcribing = False
+
+    def _transcribe_chunks_once(
+        self,
+        chunk_files: List[str],
+        vad_params: Optional[dict],
+    ) -> str:
+        """Transcribe all chunks once, allowing a clean full retry after CUDA failure."""
+        transcriptions = []
+
+        for i, chunk_file in enumerate(chunk_files):
+            if self.should_cancel:
+                logger.info("Chunked transcription canceled by user")
+                raise Exception("Transcription canceled")
+
+            logger.info(f"Processing chunk {i+1}/{len(chunk_files)}: {chunk_file}")
+            chunk_text = self._transcribe_file_once(chunk_file, vad_params)
+            transcriptions.append(chunk_text)
+
+            logger.info(
+                "Chunk %s/%s completed. Length: %s characters",
+                i + 1,
+                len(chunk_files),
+                len(chunk_text),
+            )
+
+        from services.audio_processor import audio_processor
+
+        return audio_processor.combine_transcriptions(transcriptions)
 
     def is_available(self) -> bool:
         """Check if the faster-whisper model is available.
