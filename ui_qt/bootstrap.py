@@ -126,20 +126,16 @@ def install_shutdown_listener(qt_app) -> None:
 
 
 def release_shutdown_listener() -> None:
-    """Release the timer and named shutdown event after Qt cleanup."""
-    global _SHUTDOWN_EVENT_HANDLE, _SHUTDOWN_TIMER
+    """Stop polling while keeping the event alive until process termination.
+
+    The uninstaller waits for the named event to disappear. Windows closes the
+    remaining handle during process teardown, after imported DLLs are unlocked;
+    closing it here would let file removal race with Python interpreter exit.
+    """
+    global _SHUTDOWN_TIMER
     if _SHUTDOWN_TIMER is not None:
         _SHUTDOWN_TIMER.stop()
         _SHUTDOWN_TIMER = None
-    if sys.platform == "win32" and _SHUTDOWN_EVENT_HANDLE:
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        kernel32.CloseHandle(_SHUTDOWN_EVENT_HANDLE)
-        _SHUTDOWN_EVENT_HANDLE = None
 
 
 def _restore_existing_windows_instance() -> None:

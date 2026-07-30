@@ -40,3 +40,8 @@ def test_uninstaller_stops_the_running_tray_process_before_removing_files():
     assert 'Parameters: "/F /T /IM ""{#MyAppExeName}"""' in uninstall_run
     assert "Flags: runhidden waituntilterminated" in uninstall_run
     assert 'RunOnceId: "ForceStopMeetingRecorder"' in uninstall_run
+
+    uninstall_delete = manifest.split("[UninstallDelete]", 1)[1].split(
+        "[Run]", 1
+    )[0]
+    assert 'Type: filesandordirs; Name: "{app}"' in uninstall_delete
