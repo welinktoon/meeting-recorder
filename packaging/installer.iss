@@ -59,6 +59,12 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--shutdown-for-uninstall"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "GracefulStopMeetingRecorder"
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM ""{#MyAppExeName}"""; Flags: runhidden waituntilterminated; RunOnceId: "ForceStopMeetingRecorder"
 
+[UninstallDelete]
+; Retry the application directory after normal file removal. This catches
+; transient antivirus/indexer locks without touching recordings or user data,
+; which are stored outside {app}.
+Type: filesandordirs; Name: "{app}"
+
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Запустить {#MyAppName}"; Flags: nowait postinstall skipifsilent
 Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: WizardSilent
