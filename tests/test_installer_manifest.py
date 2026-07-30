@@ -55,6 +55,7 @@ def test_windows_release_bundles_the_gpu_runtime():
     entrypoint = (PROJECT_ROOT / "app_qt.py").read_text(encoding="utf-8")
 
     assert "-r requirements-gpu.txt" in workflow
+    assert "  pull_request:" in workflow
     assert "-r requirements-gpu.txt" in build_script
     assert "Required CUDA runtime DLL was not bundled" in build_script
     for dll_name in (

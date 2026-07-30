@@ -1,6 +1,7 @@
 name: Windows release
 
 on:
+  pull_request:
   workflow_dispatch:
   push:
     tags:
