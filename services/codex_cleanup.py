@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -16,16 +17,34 @@ logger = logging.getLogger(__name__)
 
 
 class CodexCleanupMode:
-    CORRECT = "correct"
-    STRUCTURE = "structure"
-    SUMMARY = "summary"
+    BRIEF = "brief"
+    FULL = "full"
+    FULL_WITH_ORIGINAL = "full_with_original"
 
-    ALL = (CORRECT, STRUCTURE, SUMMARY)
+    ALL = (BRIEF, FULL, FULL_WITH_ORIGINAL)
     LABELS = {
-        CORRECT: "Исправить ошибки",
-        STRUCTURE: "Темы, решения и расшифровка",
-        SUMMARY: "Только итоги и решения",
+        BRIEF: "Кратко",
+        FULL: "Полное",
+        FULL_WITH_ORIGINAL: "Полное + оригинальный текст",
     }
+    LEGACY_MODES = {
+        "summary": BRIEF,
+        "structure": FULL_WITH_ORIGINAL,
+        "correct": FULL_WITH_ORIGINAL,
+    }
+
+    @classmethod
+    def normalize(cls, mode: str) -> str:
+        """Return one of the three current modes, migrating old settings."""
+        if mode in cls.ALL:
+            return mode
+        return cls.LEGACY_MODES.get(mode, cls.FULL)
+
+
+ORIGINAL_TRANSCRIPT_HEADING = "## Оригинальная расшифровка"
+_ORIGINAL_TRANSCRIPT_PATTERN = re.compile(
+    r"(?im)^#{1,6}\s+Оригинальная расшифровка\s*$"
+)
 
 
 @dataclass(frozen=True)
@@ -203,30 +222,67 @@ def start_codex_setup() -> None:
 
 
 def _mode_instruction(mode: str) -> str:
-    if mode == CodexCleanupMode.STRUCTURE:
-        return (
-            "Исправь пунктуацию и явные ошибки распознавания. Верни результат "
-            "строго в трёх коротких разделах Markdown: «Темы обсуждения», "
-            "«Что решили» и «Полная расшифровка». В первых двух разделах "
-            "используй краткие маркированные списки. В последнем разделе верни "
-            "всю исправленную расшифровку без сокращений и пропусков. Не добавляй "
-            "факты и не придумывай решения."
-        )
-    if mode == CodexCleanupMode.SUMMARY:
-        return (
-            "Не возвращай расшифровку. Верни только два коротких раздела Markdown: "
-            "«Итоги обсуждения» и «Что решили». Используй маркированные списки. "
-            "Включай только явно прозвучавшие выводы и решения; если их нет, "
-            "напиши «Не зафиксировано»."
-        )
-    return (
-        "Исправь пунктуацию, регистр, повторы и только очевидные ошибки "
-        "распознавания. Не сокращай и не пересказывай текст."
+    task_rules = (
+        "В разделе задач перечисли каждую задачу отдельно. Для каждой задачи "
+        "обязательно напиши «Ответственный: …» — имя человека, его роль или "
+        "должность ровно в той степени определённости, которая есть в исходной "
+        "речи. Если ответственный не назван, напиши «Ответственный: Не назначен». "
+        "Не угадывай имя по контексту. Также укажи явно прозвучавший срок; если "
+        "его нет, напиши «Срок: Не указан». "
     )
+    if mode == CodexCleanupMode.BRIEF:
+        return (
+            "Сделай компактную карточку встречи. Верни Markdown строго с "
+            "разделами «Суть встречи», «Решения», «Задачи и ответственные» и "
+            "«Открытые вопросы». Оставь только самое важное, но не пропускай "
+            "явно зафиксированные решения и задачи. "
+            + task_rules
+        )
+    full_rules = (
+        "Сделай полную структурированную карточку встречи. Сохрани всю "
+        "содержательную информацию без домыслов и смысловых пропусков. Верни "
+        "Markdown с разделами «Контекст и цель», «Участники и роли», «Темы "
+        "обсуждения», «Ключевые факты и аргументы», «Решения», «Задачи и "
+        "ответственные», «Сроки», «Риски и зависимости», «Открытые вопросы» и "
+        "«Следующие шаги». Если для раздела ничего не прозвучало, напиши "
+        "«Не зафиксировано». Исправляй только очевидные ошибки распознавания. "
+        + task_rules
+    )
+    if mode == CodexCleanupMode.FULL_WITH_ORIGINAL:
+        return (
+            full_rules
+            + "Не добавляй раздел с оригинальной расшифровкой: приложение "
+            "прикрепит исходный текст без изменений самостоятельно."
+        )
+    return full_rules
+
+
+def extract_original_transcript(text: str) -> str:
+    """Extract an original transcript previously appended to a full result."""
+    value = (text or "").strip()
+    matches = list(_ORIGINAL_TRANSCRIPT_PATTERN.finditer(value))
+    if not matches:
+        return value
+    original = value[matches[-1].end():].strip()
+    return original or value
+
+
+def compose_codex_result(cleaned: str, original: str, mode: str) -> str:
+    """Append the exact source text for the full-with-original mode."""
+    result = (cleaned or "").strip()
+    if CodexCleanupMode.normalize(mode) != CodexCleanupMode.FULL_WITH_ORIGINAL:
+        return result
+    marker = _ORIGINAL_TRANSCRIPT_PATTERN.search(result)
+    if marker:
+        result = result[:marker.start()].rstrip()
+    return (
+        f"{result}\n\n{ORIGINAL_TRANSCRIPT_HEADING}\n\n"
+        f"{extract_original_transcript(original)}"
+    ).strip()
 
 
 def build_codex_prompt(mode: str, extra_prompt: str = "") -> str:
-    mode = mode if mode in CodexCleanupMode.ALL else CodexCleanupMode.CORRECT
+    mode = CodexCleanupMode.normalize(mode)
     extra = extra_prompt.strip()
     return (
         "Ты редактируешь расшифровку встречи на русском языке. "
@@ -272,7 +328,7 @@ class CodexTranscriptCleanup:
     def cleanup(
         self,
         text: str,
-        mode: str = CodexCleanupMode.CORRECT,
+        mode: str = CodexCleanupMode.FULL,
         extra_prompt: str = "",
     ) -> str:
         if not text or not text.strip():
@@ -352,7 +408,7 @@ class CodexTranscriptCleanup:
                 self.last_error = "empty response"
                 return text
             self.last_error = None
-            return cleaned
+            return compose_codex_result(cleaned, text, mode)
         except subprocess.TimeoutExpired:
             self.cancel()
             self.last_error = "timeout"

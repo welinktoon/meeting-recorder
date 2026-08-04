@@ -47,10 +47,9 @@ class LoadingScreen(QWidget):
             screen.center().y() - self.height() // 2,
         )
 
-        self.status_text = "Запуск приложения…"
         self.progress_text = "Подождите немного…"
         self.logo = QPixmap(
-            str(_ASSETS_DIR / "meeting-recorder-logo.png")
+            str(_ASSETS_DIR / "meeting-recorder-mark.png")
         )
 
         self.bg_color = QColor("#15171b")
@@ -107,7 +106,7 @@ class LoadingScreen(QWidget):
             )
         )
 
-        logo_size = 104
+        logo_size = 112
         if not self.logo.isNull():
             painter.drawPixmap(
                 QRectF(
@@ -125,21 +124,13 @@ class LoadingScreen(QWidget):
         painter.drawText(
             QRectF(0, 166, width, 32),
             Qt.AlignmentFlag.AlignCenter,
-            "Запись встреч",
-        )
-
-        painter.setPen(self.accent_color)
-        painter.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        painter.drawText(
-            QRectF(24, 211, width - 48, 22),
-            Qt.AlignmentFlag.AlignCenter,
-            self.status_text,
+            "Svodika",
         )
 
         painter.setPen(self.subtext_color)
         painter.setFont(QFont("Segoe UI", 9))
         painter.drawText(
-            QRectF(24, 237, width - 48, 20),
+            QRectF(24, 221, width - 48, 20),
             Qt.AlignmentFlag.AlignCenter,
             self.progress_text,
         )
@@ -165,8 +156,8 @@ class LoadingScreen(QWidget):
         painter.restore()
 
     def update_status(self, status_text: str):
-        self.status_text = status_text
-        self.update()
+        """Compatibility alias for the single visible loading message."""
+        self.update_progress(status_text)
 
     def update_progress(self, progress_text: str):
         self.progress_text = progress_text

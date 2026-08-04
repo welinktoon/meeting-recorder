@@ -1,11 +1,13 @@
 """Tests for the main window's compact recording mode."""
 
 import os
+import sys
 import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
 from config import config
@@ -145,6 +147,82 @@ class TestMainWindowCompactMode(unittest.TestCase):
             config.MAIN_WINDOW_COLLAPSED_RESTORE_MAX_HEIGHT,
         )
         self.assertEqual(self.window.width(), config.MAIN_WINDOW_DEFAULT_WIDTH)
+
+    def test_window_flags_keep_standard_taskbar_controls(self):
+        """Windows uses its native frame while every platform keeps controls."""
+        flags = self.window.windowFlags()
+
+        self.assertTrue(flags & Qt.WindowType.Window)
+        self.assertEqual(
+            bool(flags & Qt.WindowType.FramelessWindowHint),
+            sys.platform != "win32",
+        )
+        self.assertTrue(flags & Qt.WindowType.WindowSystemMenuHint)
+        self.assertTrue(flags & Qt.WindowType.WindowMinimizeButtonHint)
+        self.assertTrue(flags & Qt.WindowType.WindowMaximizeButtonHint)
+        self.assertTrue(flags & Qt.WindowType.WindowCloseButtonHint)
+        expected_maximum_width = (
+            16777215 if sys.platform == "win32" else config.MAIN_WINDOW_MAX_WIDTH
+        )
+        self.assertEqual(self.window.maximumWidth(), expected_maximum_width)
+
+        self.window.set_compact_mode(True)
+        self.window.set_compact_mode(False)
+
+        self.assertEqual(self.window.maximumWidth(), expected_maximum_width)
+
+    def test_repeated_custom_maximize_toggles_return_to_normal(self):
+        """Rapid repeated toggles do not leave state or icon out of sync."""
+        self.window.show()
+        self.app.processEvents()
+
+        for expected_maximized in (True, False, True, False):
+            self.window.title_bar._toggle_maximize()
+            self.app.processEvents()
+            self.assertEqual(
+                self.window.title_bar._is_maximized,
+                expected_maximized,
+            )
+
+        self.assertFalse(self.window.isMaximized())
+        self.assertEqual(
+            self.window.title_bar.maximize_btn.toolTip(),
+            "Развернуть",
+        )
+
+    def test_title_bar_brand_has_balanced_spacing(self):
+        """The title bar leaves comfortable space around the brand lockup."""
+        layout = self.window.title_bar.layout()
+
+        self.assertEqual(layout.contentsMargins().left(), 16)
+        self.assertEqual(self.window.title_bar.brand_icon.width(), 28)
+        self.assertEqual(layout.itemAt(1).spacerItem().sizeHint().width(), 4)
+
+    def test_minimized_window_restores_to_normal_state(self):
+        """The shared restore path handles a taskbar-minimized window."""
+        self.window.show()
+        self.app.processEvents()
+
+        self.window.showMinimized()
+        self.app.processEvents()
+        self.assertTrue(self.window.isMinimized())
+
+        self.window.restore_from_tray()
+        self.app.processEvents()
+        self.assertTrue(self.window.isVisible())
+        self.assertFalse(self.window.isMinimized())
+
+    def test_taskbar_restore_preserves_maximized_state(self):
+        """Minimizing a maximized window does not restore it as a small one."""
+        self.window.showMaximized()
+        self.app.processEvents()
+
+        self.window.showMinimized()
+        self.app.processEvents()
+        self.window.restore_from_tray()
+        self.app.processEvents()
+
+        self.assertTrue(self.window.isMaximized())
 
 
 if __name__ == "__main__":

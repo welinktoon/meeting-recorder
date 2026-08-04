@@ -17,7 +17,11 @@ from services.audio_processor import audio_processor
 from services.history_manager import NO_SPEECH_TRANSCRIPT, history_manager
 from services.screen_recorder import ScreenRecorder
 from services.transcript_cleanup import CleanupInfo, TranscriptCleanup
-from services.codex_cleanup import CodexTranscriptCleanup
+from services.codex_cleanup import (
+    CodexCleanupMode,
+    CodexTranscriptCleanup,
+    extract_original_transcript,
+)
 try:
     from services.settings import (
         CodexCleanupTrigger,
@@ -63,7 +67,7 @@ except ImportError:  # pragma: no cover - supports lightweight test stubs
         return False
 
     def resolve_codex_cleanup_mode(settings=None):
-        return "correct"
+        return CodexCleanupMode.FULL
 
     def resolve_codex_cleanup_trigger(settings=None):
         return "manual"
@@ -465,6 +469,7 @@ class TranscriptionRuntime:
         audio_path: str,
         transcript: str,
         history_entry_id: str = "",
+        mode: str = "",
     ) -> None:
         """Improve an already saved transcript without running Whisper again."""
         logger.info(
@@ -500,16 +505,24 @@ class TranscriptionRuntime:
             self._reject_duplicate_transcription()
             return
 
+        selected_mode = CodexCleanupMode.normalize(
+            mode or resolve_codex_cleanup_mode(settings)
+        )
+        original_transcript = extract_original_transcript(
+            _transcript_body(transcript)
+        )
         self.controller.overlay_state_update.emit(OverlayState.CLEANING)
-        self.controller.status_update.emit("Обработка текста в Codex…")
+        self.controller.status_update.emit(
+            f"Codex: {CodexCleanupMode.LABELS[selected_mode]}…"
+        )
         self.controller.ui_controller.set_transcription_state(
             "cleaning", job_path
         )
         self.controller.executor.submit(
             self._improve_existing_transcript_worker,
             audio_path,
-            _transcript_body(transcript),
-            resolve_codex_cleanup_mode(settings),
+            original_transcript,
+            selected_mode,
             "\n".join(resolve_transcript_cleanup_rules(settings)),
             history_entry_id,
         )
@@ -551,6 +564,8 @@ class TranscriptionRuntime:
                     fixed,
                     model=mode,
                     variant="codex",
+                    history_entry_id=history_entry_id,
+                    original_text=transcript,
                 )
             if not transcript_path:
                 self.controller.codex_improvement_failed.emit(

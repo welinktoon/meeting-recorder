@@ -323,12 +323,18 @@ QMenu {
     color: #171a20;
     border: 1px solid #e3e8ef;
     border-radius: 10px;
-    padding: 6px;
+    padding: 8px 10px;
 }
 
 QMenu::item {
-    padding: 7px 22px;
+    padding: 8px 24px 8px 20px;
     border-radius: 6px;
+}
+
+QMenu::indicator,
+QMenu::icon {
+    position: relative;
+    left: 8px;
 }
 
 QMenu::item:selected {

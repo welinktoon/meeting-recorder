@@ -26,6 +26,28 @@ def test_installer_offers_standard_shortcut_choices():
     assert "unchecked" not in desktop_task
 
 
+def test_installer_recreates_shortcuts_with_a_versioned_explicit_icon():
+    manifest = (
+        PROJECT_ROOT / "packaging" / "installer.iss"
+    ).read_text(encoding="utf-8")
+
+    icon_path = 'IconFilename: "{app}\\MeetingRecorder-{#MyAppVersion}.ico"'
+    assert manifest.count(icon_path) == 2
+    assert manifest.count("IconIndex: 0") == 2
+    assert 'Name: "{app}\\MeetingRecorder-*.ico"' not in manifest
+    assert 'DestName: "MeetingRecorder-{#MyAppVersion}.ico"' in manifest
+    assert 'Type: files; Name: "{autodesktop}\\{#MyAppName}.lnk"' in manifest
+    assert 'Type: files; Name: "{group}\\{#MyAppName}.lnk"' in manifest
+    assert '#define MyAppName "Svodika"' in manifest
+    assert 'Name: "{autodesktop}\\Запись встреч.lnk"' in manifest
+    assert (
+        'Name: "{userprograms}\\Запись встреч\\Запись встреч.lnk"'
+        in manifest
+    )
+    assert 'Type: dirifempty; Name: "{userprograms}\\Запись встреч"' in manifest
+    assert 'Name: "{app}\\MeetingRecorder-1.0.10.ico"' in manifest
+
+
 def test_uninstaller_stops_the_running_tray_process_before_removing_files():
     manifest = (
         PROJECT_ROOT / "packaging" / "installer.iss"

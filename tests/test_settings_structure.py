@@ -4,10 +4,10 @@ import os
 from unittest.mock import patch
 
 from PyQt6.QtTest import QSignalSpy
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel
 
 from services.history_manager import history_manager
-from services.settings import settings_manager
+from services.settings import SettingsKey, settings_manager
 from ui_qt.dialogs.settings_dialog import SettingsDialog
 
 
@@ -32,6 +32,22 @@ def test_settings_are_grouped_by_user_task():
     dialog.close()
 
 
+def test_transcription_language_defaults_to_russian_and_offers_english():
+    with patch.object(settings_manager, "load_all_settings", return_value={}):
+        dialog = SettingsDialog()
+
+    assert dialog.transcription_language_combo.currentData() == "ru"
+    assert [
+        dialog.transcription_language_combo.itemText(index)
+        for index in range(dialog.transcription_language_combo.count())
+    ] == ["Русский", "English"]
+    assert [
+        dialog.transcription_language_combo.itemData(index)
+        for index in range(dialog.transcription_language_combo.count())
+    ] == ["ru", "en"]
+    dialog.close()
+
+
 def test_nonfunctional_duplicate_controls_are_not_exposed():
     dialog = SettingsDialog()
 
@@ -42,6 +58,29 @@ def test_nonfunctional_duplicate_controls_are_not_exposed():
     assert not hasattr(dialog, "threshold_slider")
     assert not hasattr(dialog, "cancel_btn")
     assert dialog.check_updates_button.text() == "Проверить обновления"
+    dialog.close()
+
+
+def test_recording_retention_avoids_duplicate_copy_and_hides_irrelevant_fields():
+    dialog = SettingsDialog()
+    dialog.recording_retention_combo.setCurrentIndex(
+        dialog.recording_retention_combo.findData("keep_all")
+    )
+
+    labels = [label.text() for label in dialog.findChildren(QLabel)]
+    assert "Хранить записи" not in labels
+    assert dialog.recording_retention_combo.accessibleName() == "Хранение записей"
+    assert dialog.max_recordings_label.isHidden()
+    assert dialog.max_recordings_spinbox.isHidden()
+    assert dialog.retention_info.isHidden()
+
+    dialog.recording_retention_combo.setCurrentIndex(
+        dialog.recording_retention_combo.findData("custom")
+    )
+
+    assert not dialog.max_recordings_label.isHidden()
+    assert not dialog.max_recordings_spinbox.isHidden()
+    assert not dialog.retention_info.isHidden()
     dialog.close()
 
 
@@ -106,6 +145,7 @@ def test_saving_a_folder_applies_it_to_the_live_library(tmp_path):
     expected = dialog._normalized_folder(os.fspath(selected))
     set_folder.assert_called_once_with(expected)
     assert saved["recordings_folder"] == expected
+    assert saved[SettingsKey.TRANSCRIPTION_LANGUAGE] == "ru"
     assert changed[0][0]["_recordings_folder_changed"] is True
     assert changed[0][0]["_recordings_found"] == 3
     assert dialog.save_bar.isHidden()

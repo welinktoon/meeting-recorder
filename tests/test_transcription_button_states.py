@@ -3,6 +3,7 @@
 import os
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -79,6 +80,116 @@ class TestTranscriptionButtonStates(unittest.TestCase):
 
         self.workspace.cancel_processing.click()
         self.assertEqual(cancellations, [True])
+        self.assertIn(
+            "QFrame#processingActions { background:transparent; border:0;",
+            self.workspace.styleSheet(),
+        )
+
+    def test_popup_hover_does_not_use_the_strong_selection_color(self):
+        """Menus and their open toolbar buttons use the neutral hover surface."""
+        hover = "#1d2939" if self.workspace.dark else "#edf3fa"
+        style = self.workspace.styleSheet()
+
+        self.assertIn(
+            "QPushButton#codexImproveButton:open "
+            f"{{ background:{hover}; }}",
+            style,
+        )
+        self.assertIn(
+            f"QMenu::item:selected {{ background:{hover};",
+            style,
+        )
+        self.assertIn("border-radius:9px; padding:8px 10px;", style)
+        self.assertIn(
+            "QMenu::indicator,QMenu::icon { position:relative; left:8px; }",
+            style,
+        )
+        self.assertIn(
+            "QMenu::item { border-radius:6px; margin:1px 0; "
+            "padding:9px 18px 9px 18px; }",
+            style,
+        )
+
+    def test_action_menu_is_right_aligned_with_a_six_pixel_gap(self):
+        """Top-right popup menus open inward instead of beyond the window."""
+        self.workspace.resize(1200, 800)
+        self.workspace.show()
+        self.workspace.codex_improve_button.show()
+        self.app.processEvents()
+
+        button = self.workspace.codex_improve_button
+        menu = self.workspace.codex_improve_menu
+        self.workspace._position_action_menu(button, menu)
+
+        button_bottom_right = button.mapToGlobal(button.rect().bottomRight())
+        expected_right = min(
+            button_bottom_right.x(),
+            button.screen().availableGeometry().right() - 8,
+        )
+        self.assertEqual(menu.geometry().right(), expected_right)
+        self.assertEqual(menu.geometry().top(), button_bottom_right.y() + 7)
+
+    def test_selecting_meeting_loads_duration_before_play(self):
+        item = QListWidgetItem("Тестовая встреча\n29.07.2026")
+        item.setData(
+            Qt.ItemDataRole.UserRole,
+            {
+                "audio": self.temp_file.name,
+                "media": self.temp_file.name,
+                "text": "",
+                "duration": 0.0,
+            },
+        )
+        with patch.object(
+            self.workspace, "_request_media_duration"
+        ) as request_duration:
+            self.workspace.notes.addItem(item)
+            self.workspace.notes.setCurrentItem(item)
+
+        request_duration.assert_called_once_with(self.temp_file.name)
+        self.assertFalse(self.workspace._media_player.source().toLocalFile())
+        self.assertEqual(self.workspace.duration_label.text(), "…")
+
+        self.workspace._apply_probed_media_duration(
+            self.temp_file.name, 125.0
+        )
+
+        self.assertEqual(self.workspace.duration_label.text(), "02:05")
+        self.assertEqual(
+            item.data(Qt.ItemDataRole.UserRole)["duration"], 125.0
+        )
+
+    def test_wav_duration_is_shown_immediately_without_locking_the_player(self):
+        wav_path = Path(self.temp_file.name).with_name("duration-test.wav")
+        with wave.open(os.fspath(wav_path), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16_000)
+            audio.writeframes(b"\0\0" * 24_000)
+        item = QListWidgetItem(
+            "Запись с длительностью\n29.07.2026  ·  4,2 МБ  ·  Расшифровано"
+        )
+        item.setData(
+            Qt.ItemDataRole.UserRole,
+            {
+                "audio": os.fspath(wav_path),
+                "media": os.fspath(wav_path),
+                "text": "",
+                "duration": 0.0,
+            },
+        )
+        try:
+            self.workspace.notes.addItem(item)
+            self.workspace.notes.setCurrentItem(item)
+
+            self.assertEqual(self.workspace.duration_label.text(), "00:01")
+            self.assertFalse(self.workspace._media_player.source().toLocalFile())
+            self.assertEqual(
+                item.data(Qt.ItemDataRole.UserRole)["duration"], 1.5
+            )
+            self.assertIn("29.07.2026  ·  00:01  ·  4,2 МБ", item.text())
+        finally:
+            wav_path.unlink(missing_ok=True)
 
     def test_error_state_enables_one_clear_retry_action(self):
         self.workspace.set_transcription_state(
@@ -298,8 +409,8 @@ class TestTranscriptionButtonStates(unittest.TestCase):
     def test_raw_transcript_offers_manual_codex_improvement(self):
         requests = []
         self.workspace.codex_improve_requested.connect(
-            lambda path, text, entry_id: requests.append(
-                (path, text, entry_id)
+            lambda path, text, entry_id, mode: requests.append(
+                (path, text, entry_id, mode)
             )
         )
         item = QListWidgetItem("Тестовая встреча\n29.07.2026")
@@ -325,7 +436,19 @@ class TestTranscriptionButtonStates(unittest.TestCase):
 
             self.assertFalse(self.workspace.codex_improve_button.isHidden())
             self.assertTrue(self.workspace.codex_improve_button.isEnabled())
-            self.workspace.codex_improve_button.click()
+            self.assertEqual(self.workspace.codex_improve_button.text(), "")
+            self.assertEqual(
+                [
+                    action.text()
+                    for action in self.workspace.codex_improve_menu.actions()
+                ],
+                [
+                    "Кратко",
+                    "Полное",
+                    "Полное + оригинальный текст",
+                ],
+            )
+            self.workspace.codex_improve_menu.actions()[0].trigger()
 
         self.assertEqual(
             requests,
@@ -333,10 +456,17 @@ class TestTranscriptionButtonStates(unittest.TestCase):
                 self.temp_file.name,
                 "Обычная расшифровка",
                 "history-entry-id",
+                "brief",
             )],
         )
 
-    def test_codex_button_is_hidden_for_existing_improved_version(self):
+    def test_existing_improved_version_can_be_redone_from_original(self):
+        requests = []
+        self.workspace.codex_improve_requested.connect(
+            lambda path, text, entry_id, mode: requests.append(
+                (path, text, entry_id, mode)
+            )
+        )
         item = QListWidgetItem("Улучшенная встреча\n29.07.2026")
         item.setData(
             Qt.ItemDataRole.UserRole,
@@ -344,6 +474,7 @@ class TestTranscriptionButtonStates(unittest.TestCase):
                 "audio": self.temp_file.name,
                 "media": self.temp_file.name,
                 "text": "Улучшенная расшифровка",
+                "original_text": "Исходная расшифровка",
                 "enhanced_by_codex": True,
             },
         )
@@ -351,7 +482,37 @@ class TestTranscriptionButtonStates(unittest.TestCase):
         self.workspace.notes.addItem(item)
         self.workspace.notes.setCurrentItem(item)
 
-        self.assertTrue(self.workspace.codex_improve_button.isHidden())
+        self.assertFalse(self.workspace.codex_improve_button.isHidden())
+        self.workspace.codex_improve_menu.actions()[2].trigger()
+        self.assertEqual(
+            requests,
+            [(
+                self.temp_file.name,
+                "Исходная расшифровка",
+                "",
+                "full_with_original",
+            )],
+        )
+
+    def test_reprocessing_prefers_edited_raw_sidecar_over_codex_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            raw = folder / "Тестовая встреча.txt"
+            codex = folder / "Тестовая встреча.codex.md"
+            raw.write_text("Исправленный вручную исходник", encoding="utf-8")
+            codex.write_text("## Итоги\n\nСтарые итоги", encoding="utf-8")
+            recording = SimpleNamespace(
+                transcription_path=str(folder / "Тестовая встреча.wav"),
+                bundle_paths=(str(codex), str(raw)),
+            )
+
+            self.assertEqual(
+                self.workspace._original_transcript_for_recording(
+                    recording,
+                    "Старый исходник из базы",
+                ),
+                "Исправленный вручную исходник",
+            )
 
     def test_empty_database_row_uses_no_speech_sidecar_as_completed(self):
         transcript_path = Path(self.temp_file.name).with_suffix(".txt")
@@ -445,6 +606,20 @@ class TestTranscriptionButtonStates(unittest.TestCase):
             self.workspace.SORT_NEWEST,
         )
         self.assertIn("Дейл 29.07.26", self.workspace.notes.item(0).text())
+
+    def test_sort_is_an_icon_menu_in_the_search_row(self):
+        self.assertTrue(self.workspace.sort.isHidden())
+        self.assertEqual(self.workspace.search_row.indexOf(self.workspace.search), 0)
+        self.assertEqual(
+            self.workspace.search_row.indexOf(self.workspace.sort_button),
+            1,
+        )
+        self.assertEqual(len(self.workspace._sort_actions), 4)
+        self.workspace.sort.setCurrentIndex(
+            self.workspace.sort.findData(self.workspace.SORT_OLDEST)
+        )
+        self.assertIn("Сначала старые", self.workspace.sort_button.toolTip())
+        self.assertTrue(self.workspace._sort_actions[1].isChecked())
 
     def test_library_can_sort_by_size_and_duration(self):
         for title, size, duration, timestamp in (

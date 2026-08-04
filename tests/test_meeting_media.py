@@ -3,6 +3,7 @@
 import os
 import tempfile
 import time
+import types
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,26 @@ def _write_wav(path: Path, channels: int, frames: int = 1600) -> None:
         output.setsampwidth(2)
         output.setframerate(16000)
         output.writeframes(samples.tobytes())
+
+
+def test_waveform_analysis_uses_real_audio_amplitude():
+    from ui_qt.widgets.voice_notes_workspace import VoiceNotesWorkspace
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "waveform.wav"
+        quiet = np.sin(np.arange(8000) * 0.08) * 500
+        loud = np.sin(np.arange(8000) * 0.08) * 12000
+        samples = np.concatenate((quiet, loud)).astype(np.int16)
+        with wave.open(str(path), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(16000)
+            output.writeframes(samples.tobytes())
+
+        levels = VoiceNotesWorkspace._media_waveform(str(path), 24)
+
+        assert len(levels) == 24
+        assert max(levels[:10]) < min(levels[14:])
 
 
 def test_new_meeting_files_use_readable_current_date_and_shared_stem():
@@ -244,6 +265,66 @@ def test_switching_recordings_folder_scans_existing_meetings_immediately():
         } == {"Планёрка.wav", "Демонстрация.webm"}
 
 
+def test_library_snapshot_detects_external_file_and_transcript_changes():
+    with tempfile.TemporaryDirectory() as directory:
+        folder = Path(directory)
+        audio = folder / "Исходное имя.wav"
+        transcript = folder / "Исходное имя.txt"
+        _write_wav(audio, 1)
+        transcript.write_text("Первый текст", encoding="utf-8")
+        manager = HistoryManager(
+            recordings_folder=directory,
+            max_recordings=None,
+        )
+
+        before = manager.get_library_snapshot()
+        renamed = folder / "Новое имя.wav"
+        audio.rename(renamed)
+        transcript.write_text("Обновлённый текст", encoding="utf-8")
+        after = manager.get_library_snapshot()
+
+        assert os.fspath(audio) in before
+        assert os.fspath(audio) not in after
+        assert os.fspath(renamed) in after
+        assert before[os.fspath(transcript)] != after[os.fspath(transcript)]
+
+
+def test_external_media_rename_repairs_database_reference():
+    with tempfile.TemporaryDirectory() as directory:
+        folder = Path(directory)
+        original = folder / "Исходное имя.wav"
+        _write_wav(original, 1)
+        manager = HistoryManager(
+            recordings_folder=directory,
+            max_recordings=None,
+        )
+        before = manager.get_library_snapshot()
+        renamed = folder / "Новое имя.wav"
+        original.rename(renamed)
+        after = manager.get_library_snapshot()
+        entry = types.SimpleNamespace(
+            id="entry-id",
+            audio_file=original.name,
+        )
+
+        with patch.object(
+            manager,
+            "get_history",
+            return_value=[entry],
+        ), patch(
+            "services.history_manager.db.update_history_audio_file",
+            return_value=True,
+        ) as update_audio_file:
+            renames = manager.reconcile_external_renames(before, after)
+
+        assert renames == {os.fspath(original): os.fspath(renamed)}
+        update_audio_file.assert_called_once_with(
+            "entry-id",
+            renamed.name,
+            file_size=after[os.fspath(renamed)][0],
+        )
+
+
 def test_media_scan_attaches_the_best_existing_transcript():
     with tempfile.TemporaryDirectory() as directory:
         folder = Path(directory)
@@ -289,7 +370,7 @@ def test_media_scan_prefers_codex_version_and_keeps_raw_version():
         codex_path = manager.save_transcript_version(
             os.fspath(audio),
             "# Встреча\n\nАккуратный текст встречи.",
-            model="structure",
+            model="full",
             variant="codex",
         )
 
@@ -301,6 +382,71 @@ def test_media_scan_prefers_codex_version_and_keeps_raw_version():
         assert "Аккуратный текст встречи" in manager.read_transcript(
             meeting.transcript_path
         )
+
+
+def test_saving_codex_sidecar_updates_existing_history_entry():
+    with tempfile.TemporaryDirectory() as directory:
+        audio = Path(directory) / "Планёрка.wav"
+        _write_wav(audio, 1)
+        manager = HistoryManager(recordings_folder=directory, max_recordings=None)
+        entry = types.SimpleNamespace(
+            raw_text="старый исходник",
+            text="старые итоги",
+        )
+
+        with patch.object(
+            manager,
+            "get_entry_by_id",
+            return_value=entry,
+        ), patch(
+            "services.history_manager.db.update_history_entry_cleanup",
+            return_value=True,
+        ) as update_cleanup:
+            path = manager.save_transcript_version(
+                os.fspath(audio),
+                "новые полные итоги",
+                model="full",
+                variant="codex",
+                history_entry_id="entry-id",
+                original_text="актуальный исходник",
+            )
+
+        assert path and Path(path).exists()
+        update_cleanup.assert_called_once_with(
+            "entry-id",
+            "новые полные итоги",
+            "актуальный исходник",
+            "codex",
+            "full",
+        )
+
+
+def test_saving_codex_sidecar_for_filesystem_meeting_skips_database_update():
+    """A discovered media path is a UI id, not a missing database primary key."""
+    with tempfile.TemporaryDirectory() as directory:
+        audio = Path(directory) / "Внешняя планёрка.webm"
+        audio.write_bytes(b"webm")
+        manager = HistoryManager(recordings_folder=directory, max_recordings=None)
+
+        with patch.object(
+            manager,
+            "get_entry_by_id",
+            return_value=None,
+        ), patch(
+            "services.history_manager.db.update_history_entry_cleanup",
+        ) as update_cleanup:
+            path = manager.save_transcript_version(
+                os.fspath(audio),
+                "# Итоги\n\nУлучшенный текст.",
+                model="full",
+                variant="codex",
+                history_entry_id=os.fspath(audio),
+                original_text="Исходный текст.",
+            )
+
+        assert path and Path(path).exists()
+        assert "Улучшенный текст" in Path(path).read_text(encoding="utf-8")
+        update_cleanup.assert_not_called()
 
 
 def test_media_scan_groups_recording_and_recovered_audio_names():

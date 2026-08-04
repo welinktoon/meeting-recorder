@@ -34,6 +34,7 @@ class SettingsKey:
     STREAMING_OVERLAY_POSITION: Final[str] = "streaming_overlay_position"
     AUTO_PASTE: Final[str] = "auto_paste"
     COPY_CLIPBOARD: Final[str] = "copy_clipboard"
+    TRANSCRIPTION_LANGUAGE: Final[str] = "transcription_language"
     TRANSCRIPT_CLEANUP_ENABLED: Final[str] = "transcript_cleanup_enabled"
     TRANSCRIPT_CLEANUP_PROMPT: Final[str] = "transcript_cleanup_prompt"
     TRANSCRIPT_CLEANUP_PROVIDER: Final[str] = "transcript_cleanup_provider"
@@ -73,6 +74,15 @@ class RecordingRetentionMode:
     """Values for ``SettingsKey.RECORDING_RETENTION_MODE``."""
     KEEP_ALL: Final[str] = "keep_all"
     CUSTOM: Final[str] = "custom"
+
+
+class TranscriptionLanguage:
+    """Languages exposed for speech recognition."""
+
+    RUSSIAN: Final[str] = "ru"
+    ENGLISH: Final[str] = "en"
+    DEFAULT: Final[str] = RUSSIAN
+    ALL: Final[Tuple[str, ...]] = (RUSSIAN, ENGLISH)
 
 
 class OverlayBadge:
@@ -175,8 +185,8 @@ def resolve_codex_cleanup_mode(settings: Optional[Dict[str, Any]] = None) -> str
     from services.codex_cleanup import CodexCleanupMode
 
     values = settings if settings is not None else settings_manager.load_all_settings()
-    mode = values.get(SettingsKey.CODEX_CLEANUP_MODE, CodexCleanupMode.CORRECT)
-    return mode if mode in CodexCleanupMode.ALL else CodexCleanupMode.CORRECT
+    mode = values.get(SettingsKey.CODEX_CLEANUP_MODE, CodexCleanupMode.FULL)
+    return CodexCleanupMode.normalize(mode)
 
 
 def resolve_codex_cleanup_trigger(
@@ -471,6 +481,23 @@ def is_hf_hub_offline_env_set() -> bool:
 
 # Global settings manager instance
 settings_manager = SettingsManager()
+
+
+def resolve_transcription_language(
+    settings: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return a supported ISO-639-1 language, defaulting to Russian."""
+    if settings is None:
+        settings = settings_manager.load_all_settings()
+    language = settings.get(
+        SettingsKey.TRANSCRIPTION_LANGUAGE,
+        TranscriptionLanguage.DEFAULT,
+    )
+    return (
+        language
+        if language in TranscriptionLanguage.ALL
+        else TranscriptionLanguage.DEFAULT
+    )
 
 
 def resolve_max_saved_recordings(

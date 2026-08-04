@@ -31,6 +31,11 @@ SUPPORTED_VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v"
 }
 SUPPORTED_TRANSCRIPT_EXTENSIONS = {".md", ".txt", ".json"}
+SUPPORTED_LIBRARY_EXTENSIONS = (
+    SUPPORTED_AUDIO_EXTENSIONS
+    | SUPPORTED_VIDEO_EXTENSIONS
+    | SUPPORTED_TRANSCRIPT_EXTENSIONS
+)
 NO_SPEECH_TRANSCRIPT = (
     "Нечего расшифровывать: в записи не обнаружена речь."
 )
@@ -378,6 +383,222 @@ class HistoryManager:
         )
         return meetings_found
 
+    def get_library_snapshot(self) -> dict[str, tuple[int, int]]:
+        """Return a cheap fingerprint of every visible meeting artifact.
+
+        The snapshot is used by the UI to notice external creates, edits,
+        deletes, size changes, and renames without continuously rebuilding the
+        whole meeting list.
+        """
+        snapshot: dict[str, tuple[int, int]] = {}
+        folder = os.path.abspath(self.recordings_folder)
+        if not os.path.isdir(folder):
+            return snapshot
+        try:
+            for root, directory_names, filenames in os.walk(folder):
+                directory_names[:] = [
+                    name for name in directory_names
+                    if not name.startswith(".")
+                ]
+                for filename in filenames:
+                    if (
+                        os.path.splitext(filename)[1].lower()
+                        not in SUPPORTED_LIBRARY_EXTENSIONS
+                    ):
+                        continue
+                    path = os.path.abspath(os.path.join(root, filename))
+                    try:
+                        stat = os.stat(path)
+                    except OSError:
+                        continue
+                    snapshot[path] = (stat.st_size, stat.st_mtime_ns)
+        except OSError as exc:
+            logger.debug("Could not fingerprint meeting folder: %s", exc)
+        return snapshot
+
+    def get_library_watch_paths(self) -> tuple[str, ...]:
+        """Return existing folders and files worth watching for live changes."""
+        folder = os.path.abspath(self.recordings_folder)
+        if not os.path.isdir(folder):
+            return ()
+        paths = []
+        try:
+            for root, directory_names, filenames in os.walk(folder):
+                directory_names[:] = [
+                    name for name in directory_names
+                    if not name.startswith(".")
+                ]
+                paths.append(os.path.abspath(root))
+                paths.extend(
+                    os.path.abspath(os.path.join(root, filename))
+                    for filename in filenames
+                    if (
+                        os.path.splitext(filename)[1].lower()
+                        in SUPPORTED_LIBRARY_EXTENSIONS
+                    )
+                )
+        except OSError as exc:
+            logger.debug("Could not enumerate meeting watch paths: %s", exc)
+        return tuple(dict.fromkeys(paths))
+
+    def reconcile_external_renames(
+        self,
+        previous_snapshot: dict[str, tuple[int, int]],
+        current_snapshot: dict[str, tuple[int, int]],
+    ) -> dict[str, str]:
+        """Repair database media references after an external file rename.
+
+        A rename preserves file size and modification time. We only accept a
+        one-to-one fingerprint match, avoiding guesses when two recordings are
+        indistinguishable.
+        """
+        media_extensions = (
+            SUPPORTED_AUDIO_EXTENSIONS | SUPPORTED_VIDEO_EXTENSIONS
+        )
+        removed = {
+            path: fingerprint
+            for path, fingerprint in previous_snapshot.items()
+            if (
+                path not in current_snapshot
+                and os.path.splitext(path)[1].lower() in media_extensions
+            )
+        }
+        added = {
+            path: fingerprint
+            for path, fingerprint in current_snapshot.items()
+            if (
+                path not in previous_snapshot
+                and os.path.splitext(path)[1].lower() in media_extensions
+            )
+        }
+        if not removed or not added:
+            return {}
+
+        removed_by_fingerprint = {}
+        added_by_fingerprint = {}
+        for path, fingerprint in removed.items():
+            removed_by_fingerprint.setdefault(fingerprint, []).append(path)
+        for path, fingerprint in added.items():
+            added_by_fingerprint.setdefault(fingerprint, []).append(path)
+
+        renames = {}
+        entries = self.get_history()
+        folder = os.path.abspath(self.recordings_folder)
+        for fingerprint, old_paths in removed_by_fingerprint.items():
+            new_paths = added_by_fingerprint.get(fingerprint, [])
+            if len(old_paths) != 1 or len(new_paths) != 1:
+                continue
+            old_path, new_path = old_paths[0], new_paths[0]
+            if (
+                os.path.splitext(old_path)[1].lower()
+                != os.path.splitext(new_path)[1].lower()
+            ):
+                continue
+            old_relative = os.path.relpath(old_path, folder)
+            new_relative = os.path.relpath(new_path, folder)
+            old_names = {
+                os.path.normcase(old_relative),
+                os.path.normcase(os.path.basename(old_relative)),
+            }
+            matched = False
+            for entry in entries:
+                if not entry.audio_file:
+                    continue
+                entry_names = {
+                    os.path.normcase(entry.audio_file),
+                    os.path.normcase(os.path.basename(entry.audio_file)),
+                }
+                if not old_names & entry_names:
+                    continue
+                matched = (
+                    db.update_history_audio_file(
+                        entry.id,
+                        new_relative,
+                        file_size=fingerprint[0],
+                    )
+                    or matched
+                )
+            if matched:
+                renames[old_path] = new_path
+                logger.info(
+                    "Reconciled externally renamed meeting file: %s -> %s",
+                    old_relative,
+                    new_relative,
+                )
+        return renames
+
+    def reconcile_missing_history_media(
+        self,
+        meetings: Optional[List[MeetingMediaInfo]] = None,
+    ) -> int:
+        """Recover renamed media references after the app was not running.
+
+        Missing database references are matched only when exactly one
+        unclaimed file has the same extension and byte size.
+        """
+        meetings = meetings if meetings is not None else self.get_media_files()
+        entries = self.get_history()
+        folder = os.path.abspath(self.recordings_folder)
+        claimed = {
+            os.path.normcase(os.path.abspath(path))
+            for entry in entries
+            for path in (
+                self.get_recording_path(entry.audio_file)
+                if entry.audio_file
+                else None,
+            )
+            if path
+        }
+        candidates = []
+        for meeting in meetings:
+            for path in (meeting.audio_path, meeting.video_path, meeting.file_path):
+                if not path:
+                    continue
+                normalized = os.path.normcase(os.path.abspath(path))
+                if normalized in claimed:
+                    continue
+                if any(
+                    os.path.normcase(os.path.abspath(existing)) == normalized
+                    for existing in candidates
+                ):
+                    continue
+                candidates.append(path)
+
+        updated = 0
+        for entry in entries:
+            if not entry.audio_file or self.get_recording_path(entry.audio_file):
+                continue
+            expected_size = int(entry.file_size or 0)
+            if expected_size <= 0:
+                continue
+            expected_extension = os.path.splitext(entry.audio_file)[1].lower()
+            matches = []
+            for path in candidates:
+                if os.path.splitext(path)[1].lower() != expected_extension:
+                    continue
+                try:
+                    if os.path.getsize(path) == expected_size:
+                        matches.append(path)
+                except OSError:
+                    continue
+            if len(matches) != 1:
+                continue
+            new_path = matches[0]
+            new_relative = os.path.relpath(new_path, folder)
+            if db.update_history_audio_file(
+                entry.id,
+                new_relative,
+                file_size=expected_size,
+            ):
+                updated += 1
+                candidates.remove(new_path)
+                logger.info(
+                    "Recovered renamed meeting reference: %s -> %s",
+                    entry.audio_file,
+                    new_relative,
+                )
+        return updated
+
     def _cleanup_stale_auxiliary_files(self) -> None:
         """Remove abandoned loopback WAV files left by an earlier crash."""
         cutoff = time.time() - 60
@@ -588,6 +809,8 @@ class HistoryManager:
         text: str,
         model: str = "",
         variant: str = "",
+        history_entry_id: str = "",
+        original_text: str = "",
     ) -> Optional[str]:
         """Persist a raw or enhanced transcript beside its meeting media."""
         if not audio_path or not text or not text.strip():
@@ -607,6 +830,33 @@ class HistoryManager:
                     handle.write(metadata + "\n")
                 handle.write("\n")
                 handle.write(text)
+            if variant == "codex" and history_entry_id:
+                entry = self.get_entry_by_id(history_entry_id)
+                # Files discovered directly in the recordings folder use their
+                # full path as a stable UI identifier.  They deliberately have
+                # no database row, so a successful sidecar write must not be
+                # reported as a save failure merely because that path cannot be
+                # updated as a DB primary key.
+                if entry is not None:
+                    source_text = original_text.strip()
+                    if not source_text:
+                        source_text = (
+                            (entry.raw_text or "").strip()
+                            or (entry.text or "").strip()
+                        )
+                    if not db.update_history_entry_cleanup(
+                        history_entry_id,
+                        text,
+                        source_text,
+                        "codex",
+                        model,
+                    ):
+                        return None
+                else:
+                    logger.info(
+                        "Saved Codex sidecar for filesystem-only meeting: %s",
+                        transcript_path,
+                    )
             return transcript_path
         except OSError as exc:
             logger.error("Failed to save transcript version %s: %s", transcript_path, exc)

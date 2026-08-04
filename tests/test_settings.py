@@ -193,7 +193,7 @@ class TestSettingsManager(unittest.TestCase):
 
 
 class TestCodexCleanupSettings(unittest.TestCase):
-    def test_defaults_are_disabled_and_correction_mode(self):
+    def test_defaults_are_disabled_and_full_mode(self):
         from services.codex_cleanup import CodexCleanupMode
         from services.settings import (
             CodexCleanupTrigger,
@@ -205,7 +205,7 @@ class TestCodexCleanupSettings(unittest.TestCase):
         self.assertFalse(resolve_codex_cleanup_enabled({}))
         self.assertEqual(
             resolve_codex_cleanup_mode({}),
-            CodexCleanupMode.CORRECT,
+            CodexCleanupMode.FULL,
         )
         self.assertEqual(
             resolve_codex_cleanup_trigger({}),
@@ -223,7 +223,24 @@ class TestCodexCleanupSettings(unittest.TestCase):
             resolve_codex_cleanup_mode(
                 {SettingsKey.CODEX_CLEANUP_MODE: "unknown"}
             ),
-            CodexCleanupMode.CORRECT,
+            CodexCleanupMode.FULL,
+        )
+
+    def test_legacy_modes_are_migrated_to_the_three_current_variants(self):
+        from services.codex_cleanup import CodexCleanupMode
+        from services.settings import SettingsKey, resolve_codex_cleanup_mode
+
+        self.assertEqual(
+            resolve_codex_cleanup_mode(
+                {SettingsKey.CODEX_CLEANUP_MODE: "summary"}
+            ),
+            CodexCleanupMode.BRIEF,
+        )
+        self.assertEqual(
+            resolve_codex_cleanup_mode(
+                {SettingsKey.CODEX_CLEANUP_MODE: "structure"}
+            ),
+            CodexCleanupMode.FULL_WITH_ORIGINAL,
         )
 
     def test_explicit_automatic_trigger_is_preserved(self):

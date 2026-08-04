@@ -3,7 +3,7 @@ from PyQt6.QtCore import QObject, QEvent
 from PyQt6.QtWidgets import QWidget, QAbstractButton, QLabel, QComboBox, QTabWidget
 
 TEXT = {
-    "OpenWhisper": "Запись встреч", "Settings": "Настройки", "General": "Основные", "Audio": "Аудио", "Hotkeys": "Горячие клавиши", "Cleanup": "Обработка текста", "Advanced": "Дополнительно",
+    "OpenWhisper": "Svodika", "Settings": "Настройки", "General": "Основные", "Audio": "Аудио", "Hotkeys": "Горячие клавиши", "Cleanup": "Обработка текста", "Advanced": "Дополнительно",
     "Yes": "Да", "&Yes": "Да", "No": "Нет", "&No": "Нет", "OK": "ОК", "Cancel": "Отмена", "&Cancel": "Отмена", "Save": "Сохранить", "Save Settings": "Сохранить настройки", "Close": "Закрыть", "Back": "Назад", "Delete": "Удалить", "Edit": "Изменить", "Add": "Добавить", "Refresh": "Обновить",
     "General Settings": "Основные настройки", "Audio Settings": "Настройки аудио", "Saved Recordings": "Сохранённые записи", "Keep recordings:": "Хранить записи:", "Keep all": "Хранить все", "Custom": "Указать количество", "Number to keep:": "Количество:",
     "Auto-paste transcription to active window": "Вставлять расшифровку в активное окно", "Copy transcription to clipboard": "Копировать расшифровку в буфер обмена", "Minimize to system tray on close": "Сворачивать в трей при закрытии",

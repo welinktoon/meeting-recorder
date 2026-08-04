@@ -19,6 +19,7 @@ _INSTANCE_MUTEX = None
 _INSTANCE_MUTEX_NAME = "Local\\MeetingRecorder.OpenWhisper.SingleInstance"
 _SHUTDOWN_EVENT_HANDLE = None
 _SHUTDOWN_TIMER = None
+_SHUTDOWN_REQUESTED = False
 _SHUTDOWN_EVENT_NAME = "Local\\MeetingRecorder.OpenWhisper.Shutdown"
 _SHUTDOWN_FOR_UNINSTALL_ARG = "--shutdown-for-uninstall"
 
@@ -76,7 +77,7 @@ def request_running_instance_shutdown(timeout_seconds: float = 8.0) -> bool:
 
 def install_shutdown_listener(qt_app) -> None:
     """Quit through Qt when the uninstaller signals the named event."""
-    global _SHUTDOWN_EVENT_HANDLE, _SHUTDOWN_TIMER
+    global _SHUTDOWN_EVENT_HANDLE, _SHUTDOWN_TIMER, _SHUTDOWN_REQUESTED
     if sys.platform != "win32":
         return
 
@@ -107,15 +108,18 @@ def install_shutdown_listener(qt_app) -> None:
         return
 
     _SHUTDOWN_EVENT_HANDLE = handle
+    _SHUTDOWN_REQUESTED = False
     timer = QTimer(qt_app.app)
     timer.setInterval(100)
 
     def check_shutdown_event() -> None:
+        global _SHUTDOWN_REQUESTED
         wait_object_0 = 0x00000000
         if (
             kernel32.WaitForSingleObject(_SHUTDOWN_EVENT_HANDLE, 0)
             == wait_object_0
         ):
+            _SHUTDOWN_REQUESTED = True
             timer.stop()
             logging.info("Graceful shutdown requested by the uninstaller")
             qt_app.quit()
@@ -127,7 +131,7 @@ def install_shutdown_listener(qt_app) -> None:
 
 def release_shutdown_listener() -> None:
     """Release the timer and named shutdown event after Qt cleanup."""
-    global _SHUTDOWN_EVENT_HANDLE, _SHUTDOWN_TIMER
+    global _SHUTDOWN_EVENT_HANDLE, _SHUTDOWN_TIMER, _SHUTDOWN_REQUESTED
     if _SHUTDOWN_TIMER is not None:
         _SHUTDOWN_TIMER.stop()
         _SHUTDOWN_TIMER = None
@@ -140,6 +144,7 @@ def release_shutdown_listener() -> None:
         kernel32.CloseHandle.restype = wintypes.BOOL
         kernel32.CloseHandle(_SHUTDOWN_EVENT_HANDLE)
         _SHUTDOWN_EVENT_HANDLE = None
+    _SHUTDOWN_REQUESTED = False
 
 
 def _restore_existing_windows_instance() -> None:
@@ -159,7 +164,7 @@ def _restore_existing_windows_instance() -> None:
             return True
         title = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, title, length + 1)
-        if title.value != "Запись встреч":
+        if title.value != "Svodika":
             return True
         rect = wintypes.RECT()
         if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -298,12 +303,18 @@ def get_early_runtime_components():
     return QtApplication, LoadingScreen
 
 
-def get_late_runtime_components():
-    """Load heavier runtime classes after the loading screen is visible."""
-    from services.application_controller import ApplicationController
+def get_main_ui_component():
+    """Load the main window classes without transcription runtimes."""
     from ui_qt.ui_controller import UIController
 
-    return UIController, ApplicationController
+    return UIController
+
+
+def get_application_controller_component():
+    """Load recording/transcription runtimes after the main window is visible."""
+    from services.application_controller import ApplicationController
+
+    return ApplicationController
 
 
 def process_qt_events() -> None:
@@ -311,13 +322,6 @@ def process_qt_events() -> None:
     from PyQt6.QtCore import QCoreApplication
 
     QCoreApplication.processEvents()
-
-
-def load_local_whisper_backend():
-    """Load the local Whisper backend (safe to call off the UI thread)."""
-    from transcriber import LocalWhisperBackend
-
-    return LocalWhisperBackend()
 
 
 def run_with_ui_pulse(fn):
@@ -422,44 +426,34 @@ def main() -> int:
         loading_screen.update_progress("Подключение компонентов…")
         process_qt_events()
 
-        profiler.mark("late_imports_started")
-        UIController, ApplicationController = run_with_ui_pulse(
-            get_late_runtime_components
-        )
-        profiler.mark("late_imports_finished")
+        profiler.mark("main_ui_imports_started")
+        UIController = run_with_ui_pulse(get_main_ui_component)
+        profiler.mark("main_ui_imports_finished")
 
-        loading_screen.update_status("Создание интерфейса…")
         loading_screen.update_progress("Настройка окон…")
         process_qt_events()
 
         ui_controller = UIController()
         profiler.mark("ui_controller_created")
 
-        loading_screen.update_status("Подготовка аудио…")
-        loading_screen.update_progress("Загрузка модели распознавания…")
-        process_qt_events()
-
-        local_backend = run_with_ui_pulse(load_local_whisper_backend)
-        app_controller = ApplicationController(
-            ui_controller, local_backend=local_backend
-        )
-        profiler.mark("application_controller_created")
-
-        local_backend = app_controller.transcription_backends.get("local_whisper")
-        if local_backend and hasattr(local_backend, "device_info"):
-            device_info = local_backend.device_info
-            loading_screen.update_progress(f"Модель готова: {device_info}")
-            process_qt_events()
-            logging.info(f"Whisper device: {device_info}")
-
         loading_screen.destroy()
         loading_screen = None
 
         ui_controller.show_main_window()
+        process_qt_events()
         profiler.mark("main_window_shown")
 
-        if local_backend and hasattr(local_backend, "device_info"):
-            ui_controller.set_device_info(local_backend.device_info)
+        # Audio hooks and the transcription engine are not required for the
+        # first paint. Connect them after the usable window is already visible.
+        ApplicationController = run_with_ui_pulse(
+            get_application_controller_component
+        )
+        profiler.mark("application_runtime_imports_finished")
+        app_controller = ApplicationController(
+            ui_controller,
+            defer_local_backend=True,
+        )
+        profiler.mark("application_controller_created")
 
         # Now that the main UI is available, a missing local model may request
         # download consent (never during startup, never for API-only users).
@@ -469,6 +463,9 @@ def main() -> int:
         profiler.log_summary()
         summary_logged = True
         logging.info("Application initialization complete")
+        if _SHUTDOWN_REQUESTED:
+            logging.info("Shutdown requested during startup; skipping event loop")
+            return 0
         logging.info("Starting event loop")
         return qt_app.run(ui_controller.main_window)
     except Exception:
