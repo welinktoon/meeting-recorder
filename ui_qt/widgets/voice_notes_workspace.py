@@ -1,5 +1,13 @@
 """Three-column, note-centric screen for local recordings."""
-from PyQt6.QtCore import Qt, pyqtSignal, QUrl, QTimer, QSize
+from PyQt6.QtCore import (
+    QFileSystemWatcher,
+    QRectF,
+    Qt,
+    pyqtSignal,
+    QUrl,
+    QTimer,
+    QSize,
+)
 from PyQt6.QtGui import (
     QColor,
     QDesktopServices,
@@ -8,19 +16,26 @@ from PyQt6.QtGui import (
     QTextBlockFormat,
     QTextCharFormat,
     QTextCursor,
+    QFont,
 )
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import QListWidgetItem
 import math
 import os
 import re
+import threading
 import time
 import wave
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QPushButton, QLineEdit, QComboBox, QFrame, QTextEdit, QCheckBox,
-    QListWidget, QStyle, QStackedWidget, QSizePolicy, QMessageBox)
+    QListWidget, QStyle, QStackedWidget, QSizePolicy, QMessageBox, QMenu,
+    QStyledItemDelegate, QStyleOptionViewItem)
 import qtawesome as qta
 from config import config
+from services.codex_cleanup import (
+    CodexCleanupMode,
+    extract_original_transcript,
+)
 from services.history_manager import NO_SPEECH_TRANSCRIPT, history_manager
 from services.hf_access import is_model_cached
 from services.format_utils import format_file_size, format_timestamp
@@ -32,25 +47,165 @@ from services.settings import (
 
 
 class WaveformWidget(QWidget):
-    """Clean continuous waveform instead of text-character blocks."""
+    """Audio-shaped playback timeline with a played/unplayed fill."""
+
+    seek_requested = pyqtSignal(float)
+
     def __init__(self, parent=None):
-        super().__init__(parent); self.setMinimumHeight(30); self.levels = [0.15] * 48; self.color = "#1769e0"
+        super().__init__(parent)
+        self.setMinimumHeight(34)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Нажмите на волну, чтобы перемотать запись")
+        self.setAccessibleName("Шкала воспроизведения записи")
+        self.levels = self.placeholder_levels("meeting")
+        self.progress = 0.0
+        self.played_color = "#1769e0"
+        self.unplayed_color = "#cbd5e1"
+
+    @staticmethod
+    def placeholder_levels(seed):
+        """Return a stable, natural-looking shape while audio is analysed."""
+        value = sum((index + 1) * ord(char) for index, char in enumerate(seed or ""))
+        phase = (value % 31) / 7
+        return [
+            max(
+                0.08,
+                min(
+                    0.88,
+                    0.16
+                    + 0.30 * abs(math.sin(index * 0.43 + phase))
+                    + 0.20 * abs(math.sin(index * 0.17 + phase * 0.7))
+                    + 0.12 * abs(math.sin(index * 0.91 + 1.3)),
+                ),
+            )
+            for index in range(96)
+        ]
+
     def set_levels(self, levels):
         if levels:
             self.levels = list(levels)
             self.update()
+
+    def set_progress(self, progress):
+        resolved = max(0.0, min(1.0, float(progress or 0.0)))
+        if not math.isclose(resolved, self.progress, abs_tol=0.0005):
+            self.progress = resolved
+            self.update()
+
     def set_color(self, color):
-        self.color = color
+        self.played_color = color
         self.update()
-    def paintEvent(self, event):
-        painter = QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        center = self.height() / 2; width = max(1, self.width() - 6)
-        pen = QPen(QColor(self.color)); pen.setWidthF(1.6); painter.setPen(pen)
+
+    def set_unplayed_color(self, color):
+        self.unplayed_color = color
+        self.update()
+
+    def _draw_bars(self, painter, color):
+        width = max(1.0, self.width() - 6.0)
+        center = self.height() / 2.0
         count = max(1, len(self.levels))
-        for x in range(3, int(width), 4):
-            value = max(0.0, min(1.0, self.levels[int((x / width) * (count - 1))]))
-            level = 2.5 + value * max(4, center - 3)
-            painter.drawLine(x, int(center - level), x, int(center + level))
+        stride = 5.0
+        bar_width = 2.6
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color))
+        x = 3.0
+        while x < width:
+            value_index = min(
+                count - 1,
+                int(((x - 3.0) / max(1.0, width - 3.0)) * count),
+            )
+            value = max(0.0, min(1.0, self.levels[value_index]))
+            half_height = 2.0 + value * max(4.0, center - 4.0)
+            bar = QRectF(
+                x,
+                center - half_height,
+                bar_width,
+                half_height * 2.0,
+            )
+            painter.drawRoundedRect(bar, bar_width / 2.0, bar_width / 2.0)
+            x += stride
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._draw_bars(painter, self.unplayed_color)
+        if self.progress > 0:
+            painter.save()
+            painter.setClipRect(
+                QRectF(0, 0, self.width() * self.progress, self.height())
+            )
+            self._draw_bars(painter, self.played_color)
+            painter.restore()
+
+    def mousePressEvent(self, event):
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.width() > 0
+        ):
+            self.seek_requested.emit(event.position().x() / self.width())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class MeetingListDelegate(QStyledItemDelegate):
+    """Paint filenames as titles and keep file facts visually secondary."""
+
+    def sizeHint(self, option, index):
+        return QSize(super().sizeHint(option, index).width(), 76)
+
+    def paint(self, painter, option, index):
+        styled = QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        lines = styled.text.splitlines()
+        title = lines[0] if lines else ""
+        metadata = "  ".join(lines[1:])
+        styled.text = ""
+        style = styled.widget.style() if styled.widget else None
+        if style is not None:
+            style.drawControl(
+                QStyle.ControlElement.CE_ItemViewItem,
+                styled,
+                painter,
+                styled.widget,
+            )
+
+        workspace = self.parent()
+        dark = bool(getattr(workspace, "dark", False))
+        title_color = QColor("#f3f6fb" if dark else "#18202b")
+        metadata_color = QColor("#a8b4c7" if dark else "#6f7b8d")
+        content = option.rect.adjusted(18, 9, -14, -9)
+
+        title_font = QFont(option.font)
+        title_font.setPixelSize(15)
+        title_font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(title_font)
+        painter.setPen(title_color)
+        title_text = painter.fontMetrics().elidedText(
+            title,
+            Qt.TextElideMode.ElideRight,
+            content.width(),
+        )
+        painter.drawText(
+            content.adjusted(0, 0, 0, -24),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            title_text,
+        )
+
+        metadata_font = QFont(option.font)
+        metadata_font.setPixelSize(12)
+        painter.setFont(metadata_font)
+        painter.setPen(metadata_color)
+        metadata_text = painter.fontMetrics().elidedText(
+            metadata,
+            Qt.TextElideMode.ElideRight,
+            content.width(),
+        )
+        painter.drawText(
+            content.adjusted(0, 27, 0, 0),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            metadata_text,
+        )
 
 
 class ElidedLabel(QLabel):
@@ -94,7 +249,9 @@ class VoiceNotesWorkspace(QWidget):
     settings_requested = pyqtSignal()
     devices_requested = pyqtSignal()
     models_requested = pyqtSignal()
-    codex_improve_requested = pyqtSignal(str, str, str)
+    codex_improve_requested = pyqtSignal(str, str, str, str)
+    media_duration_ready = pyqtSignal(str, float)
+    media_waveform_ready = pyqtSignal(str, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,7 +264,12 @@ class VoiceNotesWorkspace(QWidget):
         self._selected_media_path = ""
         self._selected_history_id = ""
         self._selected_transcript_text = ""
+        self._selected_original_text = ""
         self._selected_enhanced_by_codex = False
+        self._waveform_cache = {}
+        self._waveform_threads = set()
+        self._waveform_threads_lock = threading.Lock()
+        self._library_loaded = False
         self._transcription_state = "idle"
         self._active_transcription_path = ""
         self._transcription_error = ""
@@ -115,19 +277,43 @@ class VoiceNotesWorkspace(QWidget):
         self._record_timer = QTimer(self)
         self._record_timer.setInterval(250)
         self._record_timer.timeout.connect(self._update_recording_timer)
+        self._library_snapshot = {}
+        self._library_watcher = QFileSystemWatcher(self)
+        self._library_watcher.directoryChanged.connect(
+            self._schedule_external_library_refresh
+        )
+        self._library_watcher.fileChanged.connect(
+            self._schedule_external_library_refresh
+        )
+        self._library_refresh_timer = QTimer(self)
+        self._library_refresh_timer.setSingleShot(True)
+        self._library_refresh_timer.setInterval(300)
+        self._library_refresh_timer.timeout.connect(
+            self._refresh_external_library_changes
+        )
+        self._library_poll_timer = QTimer(self)
+        self._library_poll_timer.setInterval(2000)
+        self._library_poll_timer.timeout.connect(
+            self._poll_external_library_changes
+        )
         self._audio_output = QAudioOutput(self)
         self._media_player = QMediaPlayer(self)
         self._media_player.setAudioOutput(self._audio_output)
         self._media_player.positionChanged.connect(
-            lambda position: self.elapsed_label.setText(self._format_time(position / 1000))
+            self._on_media_position_changed
         )
-        self._media_player.durationChanged.connect(
-            lambda duration: self.duration_label.setText(self._format_time(duration / 1000))
-        )
+        self._media_player.durationChanged.connect(self._on_media_duration_changed)
         self._media_player.playbackStateChanged.connect(self._update_play_button)
+        self.media_duration_ready.connect(self._apply_probed_media_duration)
+        self.media_waveform_ready.connect(self._apply_media_waveform)
         self._build()
         self._apply_theme()
-        self.refresh_history()
+        self.search.hide()
+        self.sort_button.hide()
+        self._show_no_selection()
+        # Reading every transcript and recursively scanning the recordings
+        # folder is useful, but not required to paint the first window.
+        QTimer.singleShot(100, self._initial_library_load)
 
     def _icon(self, kind, color="#1769e0"):
         # One coherent Font Awesome solid icon family; never fall back to the
@@ -155,8 +341,8 @@ class VoiceNotesWorkspace(QWidget):
         button.setObjectName(object_name)
         button.setProperty("iconName", icon_name)
         button.setProperty("iconTone", tone)
-        button.setIconSize(QSize(17, 17))
-        button.setFixedSize(40, 40)
+        button.setIconSize(QSize(18, 18))
+        button.setFixedSize(42, 42)
         button.setToolTip(label)
         button.setAccessibleName(label)
         if callback:
@@ -178,8 +364,8 @@ class VoiceNotesWorkspace(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        nav = QFrame(); nav.setObjectName("nav"); nav.setFixedWidth(188)
-        nav_layout = QVBoxLayout(nav); nav_layout.setContentsMargins(14, 22, 14, 16); nav_layout.setSpacing(8)
+        nav = QFrame(); nav.setObjectName("nav"); nav.setFixedWidth(196)
+        nav_layout = QVBoxLayout(nav); nav_layout.setContentsMargins(20, 22, 14, 16); nav_layout.setSpacing(8)
         self.records_button = self._nav_button("Встречи", QStyle.StandardPixmap.SP_FileIcon)
         self.records_button.clicked.connect(lambda: self.show_page("records"))
         self.records_button.setProperty("active", True); nav_layout.addWidget(self.records_button)
@@ -219,7 +405,9 @@ class VoiceNotesWorkspace(QWidget):
         list_layout = QVBoxLayout(listing); list_layout.setContentsMargins(24, 30, 20, 22); list_layout.setSpacing(16)
         header = QHBoxLayout(); title = QLabel("Все встречи"); title.setObjectName("sectionTitle"); header.addWidget(title); header.addStretch()
         list_layout.addLayout(header)
-        self.search = QLineEdit(); self.search.setPlaceholderText("Поиск во встречах и тексте"); self.search.setAccessibleName("Поиск по названиям встреч и расшифровкам"); self.search.setToolTip("Искать в названиях встреч и текстах расшифровок"); self.search.setClearButtonEnabled(True); self.search.textChanged.connect(self._filter_notes); list_layout.addWidget(self.search)
+        self.search_row = QHBoxLayout()
+        self.search_row.setSpacing(8)
+        self.search = QLineEdit(); self.search.setPlaceholderText("Поиск во встречах и тексте"); self.search.setAccessibleName("Поиск по названиям встреч и расшифровкам"); self.search.setToolTip("Искать в названиях встреч и текстах расшифровок"); self.search.setClearButtonEnabled(True); self.search.textChanged.connect(self._filter_notes); self.search.setMinimumHeight(42); self.search_row.addWidget(self.search, 1)
         self.sort = QComboBox()
         self.sort.setAccessibleName("Сортировка встреч")
         self.sort.addItem("Сначала новые", self.SORT_NEWEST)
@@ -227,14 +415,37 @@ class VoiceNotesWorkspace(QWidget):
         self.sort.addItem("Сначала крупные", self.SORT_SIZE)
         self.sort.addItem("Сначала длинные", self.SORT_DURATION)
         self.sort.setToolTip("Сортировать встречи по дате, размеру файла или длительности")
-        self.sort.currentIndexChanged.connect(self._sort_notes)
-        list_layout.addWidget(self.sort)
+        self.sort.currentIndexChanged.connect(self._on_sort_changed)
+        # Keep a lightweight combo as the state model for keyboard/tests, but
+        # present sorting as the requested icon menu beside search.
+        self.sort.hide()
+        self.sort_button = self._action_button(
+            object_name="sortMeetingsButton",
+            icon_name="fa6s.arrow-down-wide-short",
+            label="Сортировка: Сначала новые",
+        )
+        self.sort_menu = QMenu(self.sort_button)
+        self._sort_actions = []
+        for index in range(self.sort.count()):
+            action = self.sort_menu.addAction(self.sort.itemText(index))
+            action.setCheckable(True)
+            action.setChecked(index == self.sort.currentIndex())
+            action.triggered.connect(
+                lambda _checked=False, selected_index=index:
+                self.sort.setCurrentIndex(selected_index)
+            )
+            self._sort_actions.append(action)
+        self.sort_button.setMenu(self.sort_menu)
+        self._align_action_menu(self.sort_button, self.sort_menu)
+        self.search_row.addWidget(self.sort_button)
+        list_layout.addLayout(self.search_row)
         self.notes = QListWidget(); self.notes.setObjectName("notes")
         self.notes.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.notes.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.notes.setWordWrap(False)
+        self.notes.setItemDelegate(MeetingListDelegate(self))
         self.notes.currentItemChanged.connect(self._select_note)
         list_layout.addWidget(self.notes, 1); records_layout.addWidget(listing)
 
@@ -250,15 +461,36 @@ class VoiceNotesWorkspace(QWidget):
         top.addWidget(self.open_media_button)
         self.codex_improve_button = self._action_button(
             object_name="codexImproveButton",
-            icon_name="fa6s.wand-magic-sparkles",
-            label="Улучшить через Codex",
-            callback=self._request_codex_improvement,
+            icon_name="fa6s.arrows-rotate",
+            label="Переделать расшифровку и итоги",
         )
         self.codex_improve_button.setToolTip(
-            "Создать улучшенную версию без повторной расшифровки"
+            "Переделать расшифровку и итоги без повторного распознавания"
         )
         self.codex_improve_button.setAccessibleName(
-            "Улучшить расшифровку через Codex"
+            "Переделать расшифровку и итоги через Codex"
+        )
+        self.codex_improve_menu = QMenu(self.codex_improve_button)
+        self._codex_mode_actions = []
+        mode_icons = {
+            CodexCleanupMode.BRIEF: "fa6s.bolt",
+            CodexCleanupMode.FULL: "fa6s.list-check",
+            CodexCleanupMode.FULL_WITH_ORIGINAL: "fa6s.file-lines",
+        }
+        for mode in CodexCleanupMode.ALL:
+            action = self.codex_improve_menu.addAction(
+                CodexCleanupMode.LABELS[mode]
+            )
+            action.setProperty("iconName", mode_icons[mode])
+            action.triggered.connect(
+                lambda _checked=False, selected_mode=mode:
+                self._request_codex_improvement(selected_mode)
+            )
+            self._codex_mode_actions.append(action)
+        self.codex_improve_button.setMenu(self.codex_improve_menu)
+        self._align_action_menu(
+            self.codex_improve_button,
+            self.codex_improve_menu,
         )
         self.codex_improve_button.hide()
         top.addWidget(self.codex_improve_button)
@@ -275,11 +507,11 @@ class VoiceNotesWorkspace(QWidget):
         self.trash_button.hide()
         top.addWidget(self.trash_button)
         layout.addLayout(top)
-        self.player = QFrame(); self.player.setObjectName("player"); player_layout = QHBoxLayout(self.player); player_layout.setContentsMargins(14, 12, 14, 12); player_layout.setSpacing(10)
+        self.player = QFrame(); self.player.setObjectName("player"); player_layout = QHBoxLayout(self.player); player_layout.setContentsMargins(10, 10, 10, 10); player_layout.setSpacing(12)
         self.play_button = QPushButton(); self.play_button.setIcon(self._icon(QStyle.StandardPixmap.SP_MediaPlay)); self.play_button.setObjectName("playButton"); self.play_button.setAccessibleName("Воспроизвести"); self.play_button.clicked.connect(self._toggle_playback); player_layout.addWidget(self.play_button)
-        self.elapsed_label = QLabel("00:00"); player_layout.addWidget(self.elapsed_label)
-        self.waveform = WaveformWidget(); player_layout.addWidget(self.waveform, 1)
-        self.duration_label = QLabel("00:00"); player_layout.addWidget(self.duration_label); layout.addWidget(self.player)
+        self.elapsed_label = QLabel("00:00"); self.elapsed_label.setMinimumWidth(42); self.elapsed_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter); player_layout.addWidget(self.elapsed_label)
+        self.waveform = WaveformWidget(); self.waveform.seek_requested.connect(self._seek_playback); player_layout.addWidget(self.waveform, 1)
+        self.duration_label = QLabel("00:00"); self.duration_label.setMinimumWidth(42); self.duration_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter); player_layout.addWidget(self.duration_label); layout.addWidget(self.player)
         self.source = QLabel("Выберите встречу слева"); self.source.setObjectName("source"); layout.addWidget(self.source)
 
         self.empty = QWidget(); self.empty.setObjectName("empty"); empty = QVBoxLayout(self.empty); empty.setAlignment(Qt.AlignmentFlag.AlignCenter); empty.setSpacing(14)
@@ -313,8 +545,8 @@ class VoiceNotesWorkspace(QWidget):
         self.processing_actions = QFrame()
         self.processing_actions.setObjectName("processingActions")
         processing_layout = QHBoxLayout(self.processing_actions)
-        processing_layout.setContentsMargins(12, 5, 6, 5)
-        processing_layout.setSpacing(8)
+        processing_layout.setContentsMargins(0, 0, 0, 0)
+        processing_layout.setSpacing(10)
         self.processing_status = QLabel("Обработка текста")
         self.processing_status.setObjectName("processingStatus")
         processing_layout.addWidget(self.processing_status)
@@ -392,12 +624,43 @@ class VoiceNotesWorkspace(QWidget):
             )
             button.setIcon(self._icon(icon_kind, color))
 
+    def _align_action_menu(self, button, menu):
+        """Open toolbar menus inward with a consistent gap from the button."""
+        menu.aboutToShow.connect(
+            lambda: QTimer.singleShot(
+                0,
+                lambda: self._position_action_menu(button, menu),
+            )
+        )
+
+    @staticmethod
+    def _position_action_menu(button, menu):
+        """Right-align a popup to its button and keep it on the active screen."""
+        menu.adjustSize()
+        menu_size = menu.sizeHint()
+        button_top_left = button.mapToGlobal(button.rect().topLeft())
+        button_bottom_right = button.mapToGlobal(button.rect().bottomRight())
+        screen = button.screen().availableGeometry()
+        edge_margin = 8
+        gap = 6
+
+        x = button_bottom_right.x() + 1 - menu_size.width()
+        x = max(
+            screen.left() + edge_margin,
+            min(x, screen.right() - menu_size.width() - edge_margin + 1),
+        )
+        y = button_bottom_right.y() + 1 + gap
+        if y + menu_size.height() > screen.bottom() - edge_margin + 1:
+            y = button_top_left.y() - gap - menu_size.height()
+        menu.move(x, max(screen.top() + edge_margin, y))
+
     def _refresh_action_icons(self):
         """Keep action meaning, weight, and optical size consistent."""
         accent = "#60a5fa" if self.dark else "#1769e0"
         danger = "#f87171" if self.dark else "#d84747"
         muted = "#617086" if self.dark else "#a0a8b4"
         for button in (
+            self.sort_button,
             self.open_media_button,
             self.codex_improve_button,
             self.trash_button,
@@ -407,6 +670,14 @@ class VoiceNotesWorkspace(QWidget):
                 qta.icon(
                     button.property("iconName"),
                     color=color,
+                    color_disabled=muted,
+                )
+            )
+        for action in self._codex_mode_actions:
+            action.setIcon(
+                qta.icon(
+                    action.property("iconName"),
+                    color=accent,
                     color_disabled=muted,
                 )
             )
@@ -422,20 +693,26 @@ class VoiceNotesWorkspace(QWidget):
             QLabel {{ background:transparent; color:{text}; }}
             QFrame#nav {{ background:{panel}; border-right:1px solid {border}; }} QFrame#list {{ background:{bg}; border-right:1px solid {border}; }}
             QLabel#sectionTitle {{ font-size:18px; font-weight:600; }} QLabel#noteName {{ font-size:28px; font-weight:600; }}
-            QPushButton#navButton {{ background:transparent; border:0; border-radius:10px; padding:11px 12px; text-align:left; font-weight:400; }} QPushButton#navButton:hover {{ background:{hover}; }} QPushButton#navButton[active='true'] {{ background:{select}; color:{accent}; }}
-            QPushButton#themeButton,QPushButton#openMediaButton,QPushButton#codexImproveButton,QPushButton#trashMeetingButton,QPushButton#iconButton,QPushButton#playButton,QPushButton#linkButton {{ border:0; background:transparent; color:{accent}; padding:7px; border-radius:10px; }}
-            QPushButton#themeButton:hover,QPushButton#openMediaButton:hover,QPushButton#codexImproveButton:hover,QPushButton#trashMeetingButton:hover,QPushButton#iconButton:hover,QPushButton#playButton:hover,QPushButton#linkButton:hover {{ background:{hover}; }}
-            QPushButton#themeButton:pressed,QPushButton#openMediaButton:pressed,QPushButton#codexImproveButton:pressed,QPushButton#trashMeetingButton:pressed,QPushButton#iconButton:pressed,QPushButton#playButton:pressed {{ background:{select}; }}
+            QPushButton#navButton {{ background:transparent; border:0; border-radius:10px; padding:11px 14px; text-align:left; font-weight:400; }} QPushButton#navButton:hover {{ background:{hover}; }} QPushButton#navButton[active='true'] {{ background:{select}; color:{accent}; }}
+            QPushButton#themeButton,QPushButton#sortMeetingsButton,QPushButton#openMediaButton,QPushButton#codexImproveButton,QPushButton#trashMeetingButton,QPushButton#iconButton,QPushButton#playButton,QPushButton#linkButton {{ border:0; background:transparent; color:{accent}; padding:8px; border-radius:10px; }}
+            QPushButton#themeButton:hover,QPushButton#sortMeetingsButton:hover,QPushButton#openMediaButton:hover,QPushButton#codexImproveButton:hover,QPushButton#trashMeetingButton:hover,QPushButton#iconButton:hover,QPushButton#playButton:hover,QPushButton#linkButton:hover {{ background:{hover}; }}
+            QPushButton#themeButton:pressed,QPushButton#sortMeetingsButton:pressed,QPushButton#openMediaButton:pressed,QPushButton#codexImproveButton:pressed,QPushButton#trashMeetingButton:pressed,QPushButton#iconButton:pressed,QPushButton#playButton:pressed {{ background:{select}; }}
+            QPushButton#sortMeetingsButton:pressed,QPushButton#sortMeetingsButton:open,QPushButton#codexImproveButton:pressed,QPushButton#codexImproveButton:open {{ background:{hover}; }}
             QPushButton#openMediaButton:disabled,QPushButton#codexImproveButton:disabled,QPushButton#trashMeetingButton:disabled,QPushButton#playButton:disabled {{ background:transparent; color:{muted}; }}
             QPushButton#trashMeetingButton {{ color:{danger}; }}
-            QListWidget#notes {{ border:0; outline:0; background:{bg}; }} QListWidget#notes::item {{ border:0; border-radius:11px; margin:4px 0; padding:16px 12px; }} QListWidget#notes::item:hover {{ background:{hover}; }} QListWidget#notes::item:selected {{ background:{select}; color:{text}; }}
+            QPushButton#codexImproveButton::menu-indicator,QPushButton#sortMeetingsButton::menu-indicator {{ image:none; width:0; }}
+            QListWidget#notes {{ border:0; outline:0; background:{bg}; }} QListWidget#notes::item {{ border:0; border-radius:11px; margin:4px 0; padding:16px 18px; }} QListWidget#notes::item:hover {{ background:{hover}; }} QListWidget#notes::item:selected {{ background:{select}; color:{text}; }}
             QFrame#player {{ border-bottom:1px solid {border}; }} QLabel#wave {{ color:{accent}; font-size:17px; }} QLabel#source,QLabel#muted {{ color:{muted}; }} QLabel#emptyTitle {{ font-size:25px; font-weight:600; }} QLabel#fieldLabel {{ font-weight:600; }}
             QFrame#recordingBar {{ background:{panel}; border:1px solid {border}; border-radius:14px; }}
             QWidget#recordActions {{ background:transparent; border:0; }}
-            QPushButton#primary {{ background:{accent}; color:#fff; border:0; border-radius:10px; padding:11px 18px; font-weight:600; text-align:center; }} QPushButton#primary:hover {{ background:#095aca; }} QPushButton#primary:disabled {{ background:{border}; color:{muted}; }} QPushButton#stopButton {{ background:{danger}; color:#fff; border:0; border-radius:10px; padding:11px 18px; font-weight:600; text-align:center; }} QPushButton#stopButton:hover {{ background:#c83737; }} QPushButton#stopButton:pressed {{ background:#ad2d2d; }} QPushButton#stopButton:disabled {{ background:{border}; color:{muted}; }} QTextEdit {{ border:0; background:transparent; font-size:16px; }} QCheckBox {{ background:transparent; color:{muted}; }} QLabel:disabled,QCheckBox:disabled {{ color:{muted}; }}
-            QFrame#processingActions {{ background:{panel}; border:1px solid {border}; border-radius:12px; }} QLabel#processingStatus {{ color:{muted}; }} QPushButton#cancelProcessing {{ border:0; background:transparent; color:{danger}; padding:5px 8px; font-weight:600; }} QPushButton#cancelProcessing:hover {{ background:{hover}; border-radius:7px; }}
+            QPushButton#primary {{ background:{accent}; color:#fff; border:0; border-radius:10px; padding:11px 18px; font-weight:600; text-align:center; }} QPushButton#primary:hover {{ background:#095aca; }} QPushButton#primary:disabled {{ background:{border}; color:{muted}; }} QPushButton#stopButton {{ background:{danger}; color:#fff; border:0; border-radius:10px; padding:11px 18px; font-weight:600; text-align:center; }} QPushButton#stopButton:hover {{ background:#c83737; }} QPushButton#stopButton:pressed {{ background:#ad2d2d; }} QPushButton#stopButton:disabled {{ background:{border}; color:{muted}; }} QTextEdit {{ border:0; background:transparent; color:{text}; font-size:16px; }} QCheckBox {{ background:transparent; color:{muted}; }} QLabel:disabled,QCheckBox:disabled {{ color:{muted}; }}
+            QFrame#processingActions {{ background:transparent; border:0; border-radius:0; }} QLabel#processingStatus {{ color:{muted}; }} QPushButton#cancelProcessing {{ border:0; background:transparent; color:{danger}; padding:5px 8px; font-weight:600; }} QPushButton#cancelProcessing:hover {{ background:{hover}; border-radius:7px; }}
+            QMenu {{ background:{panel}; color:{text}; border:1px solid {border}; border-radius:9px; padding:8px 10px; }}
+            QMenu::item {{ border-radius:6px; margin:1px 0; padding:9px 18px 9px 18px; }}
+            QMenu::indicator,QMenu::icon {{ position:relative; left:8px; }}
+            QMenu::item:selected {{ background:{hover}; color:{text}; }}
         """)
-        self.transcript.document().setDefaultStyleSheet(f"""
+        self._transcript_document_css = f"""
             body {{
                 color: {text};
                 font-family: 'Segoe UI';
@@ -452,10 +729,13 @@ class VoiceNotesWorkspace(QWidget):
             h2 {{ font-size: 21px; }}
             h3 {{ font-size: 18px; }}
             p {{ margin-top: 0; margin-bottom: 9px; }}
-            ul, ol {{ margin-top: 4px; margin-bottom: 10px; }}
-            li {{ margin-bottom: 5px; }}
+            ul, ol {{ margin-top: 6px; margin-bottom: 13px; margin-left: 28px; }}
+            li {{ margin-bottom: 8px; margin-left: 7px; }}
             strong {{ font-weight: 650; }}
-        """)
+        """
+        self.transcript.document().setDefaultStyleSheet(
+            self._transcript_document_css
+        )
         self.transcript.document().setDocumentMargin(18)
         self._apply_transcript_typography()
         self.theme_button.setToolTip(
@@ -471,6 +751,7 @@ class VoiceNotesWorkspace(QWidget):
             )
         )
         self.waveform.set_color(accent)
+        self.waveform.set_unplayed_color("#40506a" if self.dark else "#cbd5e1")
         self._refresh_action_icons()
         self._update_play_button(self._media_player.playbackState())
         self._set_empty_state_icon(
@@ -513,15 +794,33 @@ class VoiceNotesWorkspace(QWidget):
                 145,
                 QTextBlockFormat.LineHeightTypes.ProportionalHeight.value,
             )
-            block_format.setBottomMargin(5)
+            block_format.setBottomMargin(
+                9 if block.textList() is not None else 6
+            )
+            block_format.setTextIndent(7 if block.textList() is not None else 0)
             cursor.setBlockFormat(block_format)
             block = block.next()
+
+    def _on_sort_changed(self) -> None:
+        """Update the icon menu presentation and apply the selected ordering."""
+        current_index = self.sort.currentIndex()
+        for index, action in enumerate(self._sort_actions):
+            action.setChecked(index == current_index)
+        current_label = self.sort.currentText() or "Сначала новые"
+        self.sort_button.setToolTip(f"Сортировка: {current_label}")
+        self.sort_button.setAccessibleName(f"Сортировка: {current_label}")
+        self._sort_notes()
 
     def _show_transcript_text(self, text, transcript_format=""):
         if transcript_format == ".md":
             self.transcript.setMarkdown(text)
         else:
             self.transcript.setPlainText(text)
+        # QTextDocument rebuilds its formats when Markdown is loaded. Reapply
+        # the active palette so dark-theme text does not fall back to black.
+        self.transcript.document().setDefaultStyleSheet(
+            self._transcript_document_css
+        )
         self._apply_transcript_typography()
         self._highlight_search_matches(scroll_to_first=True)
 
@@ -529,6 +828,13 @@ class VoiceNotesWorkspace(QWidget):
     def _media_duration(path):
         if not path or not os.path.exists(path):
             return 0.0
+        if os.path.splitext(path)[1].casefold() == ".wav":
+            try:
+                with wave.open(path, "rb") as audio:
+                    rate = audio.getframerate()
+                    return audio.getnframes() / rate if rate else 0.0
+            except (OSError, EOFError, wave.Error):
+                return 0.0
         try:
             import av
 
@@ -542,6 +848,55 @@ class VoiceNotesWorkspace(QWidget):
         except Exception:
             return 0.0
         return 0.0
+
+    def _request_media_duration(self, path):
+        """Probe one selected file without blocking the interface or locking it."""
+        if os.path.splitext(path)[1].casefold() == ".wav":
+            # A WAV header is tiny and deterministic; reading it inline avoids
+            # a worker/file-close race while still completing immediately.
+            self.media_duration_ready.emit(path, self._media_duration(path))
+            return
+
+        def worker():
+            self.media_duration_ready.emit(path, self._media_duration(path))
+
+        threading.Thread(
+            target=worker,
+            name="meeting-duration",
+            daemon=True,
+        ).start()
+
+    def _apply_probed_media_duration(self, path, seconds):
+        if not self._same_path(path, self._selected_media_path):
+            return
+        if seconds <= 0:
+            self.duration_label.setText("—")
+            return
+        self.duration_label.setText(self._format_time(seconds))
+        current_item = self.notes.currentItem()
+        if current_item is None:
+            return
+        data = dict(current_item.data(Qt.ItemDataRole.UserRole) or {})
+        data["duration"] = seconds
+        current_item.setData(Qt.ItemDataRole.UserRole, data)
+        self._update_item_duration_text(
+            current_item, self._format_time(seconds)
+        )
+
+    @staticmethod
+    def _update_item_duration_text(item, formatted_duration):
+        """Reflect a newly probed duration in the selected library row."""
+        lines = item.text().splitlines()
+        if len(lines) < 2:
+            return
+        details = [part.strip() for part in lines[1].split("·")]
+        if len(details) >= 4:
+            details[1] = formatted_duration
+        elif len(details) == 3:
+            details.insert(1, formatted_duration)
+        else:
+            return
+        item.setText(f"{lines[0]}\n" + "  ·  ".join(details))
 
     def _toggle_playback(self):
         if not self._selected_media_path or not os.path.exists(
@@ -559,6 +914,169 @@ class VoiceNotesWorkspace(QWidget):
                 QUrl.fromLocalFile(self._selected_media_path)
             )
         self._media_player.play()
+
+    def _on_media_position_changed(self, position_ms):
+        """Keep the timestamp and played portion of the waveform in sync."""
+        self.elapsed_label.setText(self._format_time(position_ms / 1000))
+        duration_ms = self._media_player.duration()
+        self.waveform.set_progress(
+            position_ms / duration_ms if duration_ms > 0 else 0.0
+        )
+
+    def _seek_playback(self, progress):
+        """Seek to the clicked point on the audio waveform."""
+        if not self._selected_media_path:
+            return
+        current_source = self._media_player.source().toLocalFile()
+        if not self._same_path(current_source, self._selected_media_path):
+            self._media_player.setSource(
+                QUrl.fromLocalFile(self._selected_media_path)
+            )
+        duration_ms = self._media_player.duration()
+        if duration_ms <= 0:
+            return
+        self._media_player.setPosition(
+            int(max(0.0, min(1.0, progress)) * duration_ms)
+        )
+
+    @staticmethod
+    def _normalize_waveform(amplitudes, bucket_count=96):
+        """Compress arbitrary amplitude samples into display-ready buckets."""
+        if not amplitudes:
+            return []
+        bucket_count = max(1, int(bucket_count))
+        buckets = []
+        for bucket in range(bucket_count):
+            start = int(bucket * len(amplitudes) / bucket_count)
+            end = max(
+                start + 1,
+                int((bucket + 1) * len(amplitudes) / bucket_count),
+            )
+            section = amplitudes[start:end]
+            buckets.append(sum(section) / len(section))
+        nonzero = sorted(value for value in buckets if value > 0)
+        if not nonzero:
+            return []
+        peak = nonzero[min(len(nonzero) - 1, int(len(nonzero) * 0.92))]
+        peak = max(peak, 1e-9)
+        return [
+            max(0.05, min(1.0, (value / peak) ** 0.58))
+            for value in buckets
+        ]
+
+    @classmethod
+    def _media_waveform(cls, path, bucket_count=96):
+        """Read real audio energy without loading a whole meeting into RAM."""
+        extension = os.path.splitext(path)[1].casefold()
+        if extension == ".wav":
+            try:
+                import numpy as np
+
+                with wave.open(path, "rb") as audio:
+                    frame_count = audio.getnframes()
+                    frames_per_bucket = max(
+                        1,
+                        math.ceil(frame_count / max(1, bucket_count * 4)),
+                    )
+                    sample_width = audio.getsampwidth()
+                    dtype = {1: np.uint8, 2: "<i2", 4: "<i4"}.get(
+                        sample_width
+                    )
+                    if dtype is None:
+                        return []
+                    amplitudes = []
+                    while True:
+                        raw = audio.readframes(frames_per_bucket)
+                        if not raw:
+                            break
+                        samples = np.frombuffer(raw, dtype=dtype).astype(np.float32)
+                        if sample_width == 1:
+                            samples -= 128.0
+                        if samples.size:
+                            amplitudes.append(
+                                float(np.sqrt(np.mean(np.square(samples))))
+                            )
+                return cls._normalize_waveform(amplitudes, bucket_count)
+            except (OSError, EOFError, wave.Error, ValueError):
+                return []
+        try:
+            import av
+            import numpy as np
+
+            amplitudes = []
+            with av.open(path) as media:
+                audio_stream = next(iter(media.streams.audio), None)
+                if audio_stream is None:
+                    return []
+                for frame in media.decode(audio_stream):
+                    samples = frame.to_ndarray().astype(np.float32)
+                    if samples.size:
+                        amplitudes.append(
+                            float(np.sqrt(np.mean(np.square(samples))))
+                        )
+            return cls._normalize_waveform(amplitudes, bucket_count)
+        except Exception:
+            return []
+
+    def _request_media_waveform(self, path):
+        """Analyse only the selected recording and never block the interface."""
+        cached = self._waveform_cache.get(os.path.normcase(path))
+        if cached:
+            self.media_waveform_ready.emit(path, cached)
+            return
+
+        def worker():
+            try:
+                levels = self._media_waveform(path)
+                if not levels:
+                    levels = WaveformWidget.placeholder_levels(path)
+                self.media_waveform_ready.emit(path, levels)
+            finally:
+                with self._waveform_threads_lock:
+                    self._waveform_threads.discard(threading.current_thread())
+
+        waveform_thread = threading.Thread(
+            target=worker,
+            name="meeting-waveform",
+            daemon=True,
+        )
+        with self._waveform_threads_lock:
+            self._waveform_threads.add(waveform_thread)
+        waveform_thread.start()
+
+    def _apply_media_waveform(self, path, levels):
+        """Use analysis results only if the same recording is still selected."""
+        if not levels:
+            return
+        self._waveform_cache[os.path.normcase(path)] = list(levels)
+        if self._same_path(path, self._selected_media_path):
+            self.waveform.set_levels(levels)
+
+    def closeEvent(self, event):
+        """Release short-lived waveform readers before the widget is closed."""
+        deadline = time.monotonic() + 2.0
+        with self._waveform_threads_lock:
+            active_threads = list(self._waveform_threads)
+        for waveform_thread in active_threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            waveform_thread.join(remaining)
+        super().closeEvent(event)
+
+    def _on_media_duration_changed(self, duration_ms):
+        """Show metadata for the selected source as soon as Qt has read it."""
+        self._on_media_position_changed(self._media_player.position())
+        if duration_ms <= 0 or not self._selected_media_path:
+            return
+        current_source = self._media_player.source().toLocalFile()
+        if current_source and not self._same_path(
+            current_source, self._selected_media_path
+        ):
+            return
+        self._apply_probed_media_duration(
+            self._selected_media_path, duration_ms / 1000
+        )
 
     def _update_play_button(self, state):
         icon_name = "fa6s.pause" if state == QMediaPlayer.PlaybackState.PlayingState else "fa6s.play"
@@ -655,7 +1173,7 @@ class VoiceNotesWorkspace(QWidget):
             codex_enabled and not busy and not self.recording
         )
         self.codex_improve_button.setToolTip(
-            "Создать улучшенную версию без повторной расшифровки"
+            "Переделать расшифровку и итоги без повторного распознавания"
             if codex_enabled
             else "Сначала включите Codex в настройках обработки текста"
         )
@@ -753,18 +1271,18 @@ class VoiceNotesWorkspace(QWidget):
                 QUrl.fromLocalFile(self._selected_media_path)
             )
 
-    def _request_codex_improvement(self):
+    def _request_codex_improvement(self, mode=CodexCleanupMode.FULL):
         source_path = self._selected_audio_path or self._selected_media_path
         if (
-            not self._selected_transcript_text.strip()
-            or self._selected_enhanced_by_codex
-            or NO_SPEECH_TRANSCRIPT in self._selected_transcript_text
+            not self._selected_original_text.strip()
+            or NO_SPEECH_TRANSCRIPT in self._selected_original_text
         ):
             return
         self.codex_improve_requested.emit(
             source_path,
-            self._selected_transcript_text,
+            self._selected_original_text,
             self._selected_history_id,
+            CodexCleanupMode.normalize(mode),
         )
 
     def _move_selected_to_trash(self):
@@ -956,15 +1474,125 @@ class VoiceNotesWorkspace(QWidget):
         if current is not None:
             self.notes.setCurrentItem(current)
 
+    def _sync_library_watcher(self):
+        """Watch both directories and files, including nested meeting folders."""
+        desired = set(history_manager.get_library_watch_paths())
+        current = set(self._library_watcher.directories())
+        current.update(self._library_watcher.files())
+        obsolete = list(current - desired)
+        if obsolete:
+            self._library_watcher.removePaths(obsolete)
+        missing = [
+            path for path in desired - current
+            if os.path.exists(path)
+        ]
+        if missing:
+            self._library_watcher.addPaths(missing)
+
+    def _initial_library_load(self):
+        if not self._library_loaded:
+            self.refresh_history()
+
+    def _capture_library_state(self):
+        self._library_snapshot = history_manager.get_library_snapshot()
+        self._sync_library_watcher()
+
+    def _schedule_external_library_refresh(self, _path=""):
+        """Coalesce the burst of events produced by a save or rename."""
+        self._library_refresh_timer.start()
+
+    def _poll_external_library_changes(self):
+        """Fallback for file systems that do not emit reliable watcher events."""
+        current = history_manager.get_library_snapshot()
+        if current != self._library_snapshot:
+            self._library_refresh_timer.start()
+
+    def _refresh_external_library_changes(self):
+        current = history_manager.get_library_snapshot()
+        if current == self._library_snapshot:
+            self._sync_library_watcher()
+            return
+        renames = history_manager.reconcile_external_renames(
+            self._library_snapshot,
+            current,
+        )
+        for attribute in ("_selected_audio_path", "_selected_media_path"):
+            selected = getattr(self, attribute, "")
+            if not selected:
+                continue
+            normalized = os.path.normcase(os.path.abspath(selected))
+            for old_path, new_path in renames.items():
+                if normalized == os.path.normcase(os.path.abspath(old_path)):
+                    setattr(self, attribute, new_path)
+                    break
+        self._library_snapshot = current
+        self.refresh_history()
+
+    @staticmethod
+    def _original_transcript_for_recording(recording, fallback=""):
+        """Prefer the editable non-Codex sidecar as the reprocessing source."""
+        if recording:
+            candidates = []
+            expected_raw_path = (
+                os.path.splitext(recording.transcription_path)[0] + ".txt"
+                if recording.transcription_path
+                else ""
+            )
+            for path in getattr(recording, "bundle_paths", ()):
+                name = os.path.basename(path).casefold()
+                extension = os.path.splitext(path)[1].lower()
+                if extension not in {".txt", ".md", ".json"}:
+                    continue
+                if ".codex." in name:
+                    continue
+                priority = (
+                    0 if expected_raw_path and VoiceNotesWorkspace._same_path(
+                        path, expected_raw_path
+                    ) else 1 if extension == ".txt" else 2
+                )
+                candidates.append((priority, path))
+            for _priority, path in sorted(
+                candidates,
+                key=lambda item: (item[0], item[1].casefold()),
+            ):
+                text = history_manager.read_transcript(path)
+                if history_manager.has_transcript_content(text):
+                    return text
+        return extract_original_transcript(fallback)
+
     def refresh_history(self):
         selected_path = self._selected_media_path or self._selected_audio_path
         selected_history_id = self._selected_history_id
         self.notes.blockSignals(True); self.notes.clear()
+        history_entries = history_manager.get_history()
+        media_files = history_manager.get_media_files()
+        if history_manager.reconcile_missing_history_media(media_files):
+            history_entries = history_manager.get_history()
+            media_files = history_manager.get_media_files()
+        media_by_path = {}
+        for recording in media_files:
+            for path in (
+                recording.file_path,
+                recording.transcription_path,
+                recording.audio_path,
+                recording.video_path,
+            ):
+                if path:
+                    media_by_path[
+                        os.path.normcase(os.path.abspath(path))
+                    ] = recording
         seen = set()
-        for entry in history_manager.get_history():
+        for entry in history_entries:
             audio_path = history_manager.get_recording_path(entry.audio_file) if entry.audio_file else ""
-            video_path = ""
-            if audio_path:
+            recording = (
+                media_by_path.get(
+                    os.path.normcase(os.path.abspath(audio_path))
+                )
+                if audio_path
+                else None
+            )
+            video_path = recording.video_path if recording else ""
+            if audio_path and not recording:
                 extension = os.path.splitext(audio_path)[1].lower()
                 if extension in {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v"}:
                     video_path = audio_path
@@ -972,35 +1600,61 @@ class VoiceNotesWorkspace(QWidget):
                     sidecar = os.path.splitext(audio_path)[0] + ".mp4"
                     if os.path.exists(sidecar):
                         video_path = sidecar
-                seen.add(os.path.normcase(audio_path))
+            if recording:
+                seen.update(
+                    os.path.normcase(os.path.abspath(path))
+                    for path in (
+                        recording.file_path,
+                        recording.transcription_path,
+                        recording.audio_path,
+                        recording.video_path,
+                    )
+                    if path
+                )
+            elif audio_path:
+                seen.add(os.path.normcase(os.path.abspath(audio_path)))
                 if video_path:
-                    seen.add(os.path.normcase(video_path))
+                    seen.add(os.path.normcase(os.path.abspath(video_path)))
             media_path = video_path or audio_path
             display_text = entry.text or ""
             enhanced_by_codex = entry.cleanup_provider == "codex"
             transcript_format = ".md" if enhanced_by_codex else ".txt"
             if audio_path:
-                codex_path = os.path.splitext(audio_path)[0] + ".codex.md"
-                codex_text = history_manager.read_transcript(codex_path)
-                if codex_text:
-                    display_text = codex_text
-                    enhanced_by_codex = True
-                    transcript_format = ".md"
-                elif not display_text.strip():
-                    # The recording can have an older empty database row while
-                    # a later transcription attempt created a valid .txt
-                    # sidecar, including the explicit no-speech marker.
-                    transcript_path = os.path.splitext(audio_path)[0] + ".txt"
-                    sidecar_text = history_manager.read_transcript(
+                transcript_path = (
+                    recording.transcript_path
+                    if recording and recording.transcript_path
+                    else os.path.splitext(audio_path)[0] + ".txt"
+                )
+                sidecar_text = history_manager.read_transcript(
+                    transcript_path
+                )
+                if history_manager.has_transcript_content(sidecar_text):
+                    # Files are the source of truth. This intentionally
+                    # reflects edits made in Notepad/Word/another program.
+                    display_text = sidecar_text
+                    transcript_name = os.path.basename(
                         transcript_path
-                    )
-                    if history_manager.has_transcript_content(sidecar_text):
-                        display_text = sidecar_text
-                        transcript_format = ".txt"
+                    ).casefold()
+                    enhanced_by_codex = ".codex." in transcript_name
+                    transcript_format = os.path.splitext(
+                        transcript_path
+                    )[1].lower()
             no_speech = NO_SPEECH_TRANSCRIPT in display_text
             if no_speech:
                 display_text = NO_SPEECH_TRANSCRIPT
             has_transcript = bool(display_text.strip())
+            fallback_original = (
+                getattr(entry, "raw_text", "")
+                or extract_original_transcript(entry.text or display_text)
+            )
+            original_text = (
+                display_text
+                if has_transcript and not enhanced_by_codex
+                else self._original_transcript_for_recording(
+                    recording,
+                    fallback_original,
+                )
+            )
             fallback_title = (
                 os.path.splitext(os.path.basename(audio_path))[0]
                 if audio_path
@@ -1012,8 +1666,12 @@ class VoiceNotesWorkspace(QWidget):
                 first_line.strip(),
                 flags=re.IGNORECASE,
             ))
+            # For a file-backed meeting, the filename is the visible title.
+            # Renaming a file in Explorer must immediately rename it here too.
             title = (
-                self._clean_transcript_title(first_line)
+                fallback_title
+                if audio_path
+                else self._clean_transcript_title(first_line)
                 if has_transcript and not no_speech and not title_from_metadata
                 else fallback_title
             )[:44]
@@ -1022,13 +1680,21 @@ class VoiceNotesWorkspace(QWidget):
             # player supplies the duration safely when a user selects one.
             seconds = float(entry.audio_duration or 0)
             duration = self._format_time(seconds)
-            size_bytes = self._meeting_size(audio_path, video_path)
+            size_bytes = (
+                recording.size_bytes
+                if recording
+                else self._meeting_size(audio_path, video_path)
+            )
             if not size_bytes:
                 size_bytes = int(getattr(entry, "file_size", 0) or 0)
-            timestamp = self._meeting_timestamp(
-                getattr(entry, "timestamp", ""),
-                media_path,
-                audio_path,
+            timestamp = (
+                recording.timestamp
+                if recording
+                else self._meeting_timestamp(
+                    getattr(entry, "timestamp", ""),
+                    media_path,
+                    audio_path,
+                )
             )
             meeting_date = format_timestamp(timestamp)
             size = format_file_size(size_bytes) if size_bytes else "—"
@@ -1050,6 +1716,7 @@ class VoiceNotesWorkspace(QWidget):
                 "media": media_path,
                 "video": video_path,
                 "text": display_text,
+                "original_text": original_text,
                 "transcript_format": transcript_format,
                 "enhanced_by_codex": enhanced_by_codex,
                 "model": entry.model,
@@ -1058,7 +1725,7 @@ class VoiceNotesWorkspace(QWidget):
                 "timestamp": timestamp,
             })
             self.notes.addItem(item)
-        for recording in history_manager.get_media_files():
+        for recording in media_files:
             transcript_text = history_manager.read_transcript(
                 recording.transcript_path
             )
@@ -1067,6 +1734,20 @@ class VoiceNotesWorkspace(QWidget):
             no_speech = NO_SPEECH_TRANSCRIPT in transcript_text
             if no_speech:
                 transcript_text = NO_SPEECH_TRANSCRIPT
+            enhanced_by_codex = bool(
+                transcript_text
+                and ".codex." in os.path.basename(
+                    recording.transcript_path or ""
+                ).casefold()
+            )
+            original_text = (
+                transcript_text
+                if transcript_text and not enhanced_by_codex
+                else self._original_transcript_for_recording(
+                    recording,
+                    transcript_text,
+                )
+            )
             paths = {
                 os.path.normcase(path)
                 for path in (
@@ -1085,10 +1766,7 @@ class VoiceNotesWorkspace(QWidget):
                 "Речь не обнаружена"
                 if no_speech
                 else "Улучшено в Codex"
-                if transcript_text
-                and ".codex." in os.path.basename(
-                    recording.transcript_path or ""
-                ).casefold()
+                if enhanced_by_codex
                 else "Расшифровано" if transcript_text
                 else "Нет расшифровки"
             )
@@ -1103,15 +1781,12 @@ class VoiceNotesWorkspace(QWidget):
                 "media": recording.file_path,
                 "video": recording.video_path or "",
                 "text": transcript_text,
+                "original_text": original_text,
                 "transcript_path": recording.transcript_path or "",
                 "transcript_format": os.path.splitext(
                     recording.transcript_path or ""
                 )[1].lower(),
-                "enhanced_by_codex": (
-                    ".codex." in os.path.basename(
-                        recording.transcript_path or ""
-                    ).casefold()
-                ),
+                "enhanced_by_codex": enhanced_by_codex,
                 "model": "",
                 "duration": 0.0,
                 "size": recording.size_bytes,
@@ -1120,7 +1795,9 @@ class VoiceNotesWorkspace(QWidget):
             self.notes.addItem(item)
         self._sort_notes()
         self.notes.blockSignals(False)
-        self.search.setVisible(self.notes.count() > 0)
+        has_meetings = self.notes.count() > 0
+        self.search.setVisible(has_meetings)
+        self.sort_button.setVisible(has_meetings)
         restored_item = None
         if selected_path or selected_history_id:
             for index in range(self.notes.count()):
@@ -1153,12 +1830,17 @@ class VoiceNotesWorkspace(QWidget):
         else:
             self._show_no_selection()
         self._filter_notes(self.search.text())
+        self._library_loaded = True
+        self._capture_library_state()
+        if not self._library_poll_timer.isActive():
+            self._library_poll_timer.start()
 
     def _show_library_selection(self):
         self._selected_audio_path = ""
         self._selected_media_path = ""
         self._selected_history_id = ""
         self._selected_transcript_text = ""
+        self._selected_original_text = ""
         self._selected_enhanced_by_codex = False
         self.note_name.setText("Выберите встречу")
         self.open_media_button.hide()
@@ -1179,6 +1861,7 @@ class VoiceNotesWorkspace(QWidget):
         self._selected_media_path = ""
         self._selected_history_id = ""
         self._selected_transcript_text = ""
+        self._selected_original_text = ""
         self._selected_enhanced_by_codex = False
         self.note_name.setText("Встреч пока нет")
         self.open_media_button.hide()
@@ -1187,6 +1870,10 @@ class VoiceNotesWorkspace(QWidget):
         self.source.clear()
         self.source.hide()
         self.elapsed_label.setText("00:00")
+        self.waveform.set_progress(0.0)
+        self.waveform.set_levels(
+            WaveformWidget.placeholder_levels(self._selected_media_path)
+        )
         self.duration_label.setText("00:00")
         self.player.hide()
         self.play_button.setEnabled(False)
@@ -1211,6 +1898,10 @@ class VoiceNotesWorkspace(QWidget):
         data = current.data(Qt.ItemDataRole.UserRole) or {}
         self._selected_history_id = data.get("id") or ""
         self._selected_transcript_text = data.get("text") or ""
+        self._selected_original_text = (
+            data.get("original_text")
+            or extract_original_transcript(self._selected_transcript_text)
+        )
         self._selected_enhanced_by_codex = bool(
             data.get("enhanced_by_codex")
         )
@@ -1237,33 +1928,46 @@ class VoiceNotesWorkspace(QWidget):
         )
         self.codex_improve_button.setVisible(
             bool(
-                self._selected_transcript_text.strip()
-                and not self._selected_enhanced_by_codex
+                self._selected_original_text.strip()
                 and NO_SPEECH_TRANSCRIPT
-                not in self._selected_transcript_text
+                not in self._selected_original_text
             )
         )
         self.player.show()
         self.source.setText(
             os.path.basename(self._selected_media_path) or "Файл не найден"
         )
-        self.source.show()
+        source_stem = os.path.splitext(self.source.text())[0]
+        visible_title = current.text().splitlines()[0].strip()
+        self.source.setVisible(
+            bool(self.source.text()) and source_stem.casefold() != visible_title.casefold()
+        )
         if (
             self._media_player.playbackState()
             != QMediaPlayer.PlaybackState.StoppedState
         ):
             self._media_player.stop()
-        # Defer native decoder initialization until Play is pressed. Meeting
-        # folders often contain partially recovered WebM files, and probing
-        # all of them while populating the list is both slow and fragile.
+        if self._media_player.source().toLocalFile():
+            # Release the previously played file so Explorer can rename it.
+            self._media_player.setSource(QUrl())
         self.elapsed_label.setText("00:00")
-        self.duration_label.setText(self._format_time(data.get("duration", 0)))
-        self.play_button.setEnabled(
-            bool(
-                self._selected_media_path
-                and os.path.exists(self._selected_media_path)
-            )
+        known_duration = float(data.get("duration") or 0)
+        media_exists = bool(
+            self._selected_media_path
+            and os.path.exists(self._selected_media_path)
         )
+        self.duration_label.setText(
+            self._format_time(known_duration)
+            if known_duration > 0
+            else "…"
+            if media_exists
+            else "—"
+        )
+        self.play_button.setEnabled(media_exists)
+        if media_exists:
+            self._request_media_waveform(self._selected_media_path)
+        if media_exists and known_duration <= 0:
+            self._request_media_duration(self._selected_media_path)
         text = data.get("text", "")
         if text:
             self.empty.hide()

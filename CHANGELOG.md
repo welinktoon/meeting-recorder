@@ -1,11 +1,45 @@
 # Changelog
 
-All notable changes to OpenWhisper will be documented in this file.
+All notable changes to Svodika will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Added in 1.0.11
+- Added a persisted transcription-language selector with Russian as the default and English as an option for both local and OpenAI recognition.
+
+### Changed in 1.0.11
+- Renamed the user-facing application and Windows installer product to Svodika while preserving executable and update compatibility.
+- Simplified the loading screen to one concise status line.
+
+### Fixed in 1.0.10
+- Tightened popup-menu spacing and aligned toolbar menus inward with a consistent six-pixel gap.
+
+### Fixed in 1.0.9
+- Replaced the strong blue hover/open fill in popup menus with a restrained neutral surface.
+
+### Fixed in 1.0.8
+- Restored the native Windows 11 frame, outline, shadow, rounded corners, Snap integration, and standard window controls.
+- Fixed repeated maximize/restore toggles getting out of sync.
+- Replaced the meeting-sort dropdown with a compact icon menu beside search and increased spacing in transcripts and new controls.
+- Codex results for filesystem-only meetings now remain successful after their sidecar is written instead of failing on a nonexistent database row.
+- The Windows installer now clears obsolete versioned icons and explicitly refreshes the shell icon cache after upgrading shortcuts.
+
+### Changed in 1.0.7
+- Reworked Codex meeting processing into three clear variants: brief, full, and full with the exact original transcript.
+- Full meeting cards now cover context, participants, discussion, decisions, risks, open questions, next steps, and a separate task list with an explicit responsible person, role, or job title for every task.
+- Added an icon-only reprocessing menu to every existing transcript, including already enhanced meetings, while preserving the editable raw transcript as the source of truth.
+
+### Changed in 1.0.6
+- Replaced all Windows-facing artwork with the approved soft-3D microphone in a precisely centered transparent blue badge.
+- Added a matching transparent microphone-only mark for the title bar and loading screen, where the circular badge would be visually redundant.
+
+### Changed in 1.0.5
+- Replaced the application artwork with a centered, transparent, large-format microphone mark and regenerated the multi-resolution Windows icon.
+- Restored standard Windows taskbar minimize/restore behavior for the frameless main window.
+- A single click on the system-tray icon now toggles the main window; a double-click always restores it.
 
 ### Fixed in 1.0.4
 - The Windows release now bundles the CUDA 12 runtime libraries required by CTranslate2 instead of detecting an NVIDIA GPU and failing on the first transcription.

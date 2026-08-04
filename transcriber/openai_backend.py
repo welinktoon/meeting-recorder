@@ -7,6 +7,7 @@ from typing import Optional, List
 from openai import OpenAI
 from .base import TranscriptionBackend
 from config import config
+from services.settings import resolve_transcription_language
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,8 @@ class OpenAIBackend(TranscriptionBackend):
                 response = self.client.audio.transcriptions.create(
                     model=api_model,
                     file=f,
-                    response_format="text"
+                    response_format="text",
+                    language=resolve_transcription_language(),
                 )
 
             if self.should_cancel:
@@ -166,7 +168,8 @@ class OpenAIBackend(TranscriptionBackend):
                     response = self.client.audio.transcriptions.create(
                         model=api_model,
                         file=f,
-                        response_format="text"
+                        response_format="text",
+                        language=resolve_transcription_language(),
                     )
 
                 chunk_text = response.strip()

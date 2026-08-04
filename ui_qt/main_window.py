@@ -112,7 +112,7 @@ class CustomTitleBar(QFrame):
         self.setAutoFillBackground(True)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 0, 0, 0)
+        layout.setContentsMargins(16, 0, 0, 0)
         layout.setSpacing(0)
 
         self._build_menu_bar(layout)
@@ -135,23 +135,24 @@ class CustomTitleBar(QFrame):
         logo_path = (
             Path(__file__).resolve().parent
             / "assets"
-            / "meeting-recorder-logo.png"
+            / "meeting-recorder-mark.png"
         )
         logo = QPixmap(str(logo_path))
         if not logo.isNull():
             self.brand_icon.setPixmap(
                 logo.scaled(
-                    22,
-                    22,
+                    24,
+                    24,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
             )
-        self.brand_icon.setFixedSize(28, 28)
+        self.brand_icon.setFixedSize(28, 30)
         self.brand_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.brand_icon)
+        layout.addSpacing(4)
 
-        self.title_label = QLabel("Запись встреч")
+        self.title_label = QLabel("Svodika")
         self.title_label.setStyleSheet(self._TITLE_LABEL_STYLE)
         layout.addWidget(self.title_label)
 
@@ -196,23 +197,36 @@ class CustomTitleBar(QFrame):
         if self.parent_window:
             if getattr(self.parent_window, "_compact_mode", False):
                 return
-            if self._is_maximized:
-                # Restore to saved geometry
-                if self._normal_geometry:
-                    self.parent_window.setGeometry(self._normal_geometry)
-                self.maximize_btn.setIcon(
-                    qta.icon("fa6s.expand", color="#9aa8bc")
-                )
-                self.maximize_btn.setToolTip("Развернуть")
+            is_maximized = (
+                self.parent_window.isMaximized() or self._is_maximized
+            )
+            if is_maximized:
+                # A geometry assignment alone does not clear Qt's maximized
+                # window-state bit.  That made every second/third click appear
+                # to stop working on Windows.
+                normal_geometry = self._normal_geometry
+                self.parent_window.showNormal()
+                if normal_geometry:
+                    self.parent_window.setGeometry(normal_geometry)
+                self.sync_window_state(False)
             else:
                 # Save current geometry before maximizing
-                self._normal_geometry = self.parent_window.geometry()
+                self._normal_geometry = QRect(self.parent_window.geometry())
                 self.parent_window.showMaximized()
-                self.maximize_btn.setIcon(
-                    qta.icon("fa6s.compress", color="#9aa8bc")
-                )
-                self.maximize_btn.setToolTip("Восстановить")
-            self._is_maximized = not self._is_maximized
+                self.sync_window_state(True)
+
+    def sync_window_state(self, maximized: bool) -> None:
+        """Keep the custom control in sync with native window-state changes."""
+        self._is_maximized = bool(maximized)
+        self.maximize_btn.setIcon(
+            qta.icon(
+                "fa6s.compress" if maximized else "fa6s.expand",
+                color="#9aa8bc",
+            )
+        )
+        label = "Восстановить" if maximized else "Развернуть"
+        self.maximize_btn.setToolTip(label)
+        self.maximize_btn.setAccessibleName(label)
 
     def _close(self):
         if self.parent_window:
@@ -296,15 +310,15 @@ class MainWindow(QMainWindow):
     history_toggle_requested = pyqtSignal()
     retranscribe_requested = pyqtSignal(str)  # audio_path
     codex_improve_requested = pyqtSignal(
-        str, str, str
-    )  # audio_path, transcript, history_entry_id
+        str, str, str, str
+    )  # audio_path, original_transcript, history_entry_id, mode
     upload_file_requested = pyqtSignal(str)  # audio_path from upload tab Transcribe button
     tab_changed = pyqtSignal(int)  # Emitted when tab selection changes
 
     def __init__(self):
         """Initialize the main window."""
         super().__init__()
-        self.setWindowTitle("Запись встреч")
+        self.setWindowTitle("Svodika")
         self.setWindowIcon(
             QIcon(
                 str(
@@ -315,20 +329,38 @@ class MainWindow(QMainWindow):
             )
         )
 
-        # Frameless window with custom title bar.
+        # Windows gets its native non-client frame.  Besides using the standard
+        # Windows 11 controls, this restores shell shadows, the resize outline,
+        # rounded corners and reliable Snap/maximize behavior.  Other platforms
+        # retain the existing custom title bar.
+        self._use_native_window_frame = sys.platform == "win32"
+
+        # Frameless window with custom title bar on non-Windows platforms.
         # Keep the explicit Window type flag: setWindowFlags() replaces *all*
         # flags, and a bare FramelessWindowHint drops the top-level Window type.
         # On macOS that produces an NSWindow that fails to order back to the
         # front after hide() (i.e. can't be restored from the tray); on Windows
         # it happens to work either way. Including Window is safe on both.
-        self.setWindowFlags(
-            Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+        window_flags = (
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
         )
+        if not self._use_native_window_frame:
+            window_flags |= Qt.WindowType.FramelessWindowHint
+        self.setWindowFlags(window_flags)
         self.setMinimumSize(
             config.MAIN_WINDOW_MIN_WIDTH,
             config.MAIN_WINDOW_MIN_HEIGHT,
         )
-        self.setMaximumWidth(config.MAIN_WINDOW_MAX_WIDTH)
+        # A finite maximum width makes Qt remove WS_MAXIMIZEBOX on Windows,
+        # leaving a caption button that looks native but cannot participate in
+        # normal Windows maximize/Snap behavior.  Let the native frame use the
+        # whole monitor; keep the legacy width cap for the custom frame.
+        if not self._use_native_window_frame:
+            self.setMaximumWidth(config.MAIN_WINDOW_MAX_WIDTH)
         self.resize(
             config.MAIN_WINDOW_DEFAULT_WIDTH,
             config.MAIN_WINDOW_DEFAULT_HEIGHT,
@@ -381,6 +413,9 @@ class MainWindow(QMainWindow):
         self._restore_window_geometry()
         self._restore_compact_mode()
 
+        if self._use_native_window_frame:
+            QTimer.singleShot(0, self._apply_windows_frame_theme)
+
         # Enable mouse tracking for resize cursor updates
         self.setMouseTracking(True)
         # Install event filter on application to catch mouse moves from all widgets
@@ -409,6 +444,7 @@ class MainWindow(QMainWindow):
         # Custom title bar
         self.title_bar = CustomTitleBar(self)
         outer_layout.addWidget(self.title_bar)
+        self.title_bar.setVisible(not self._use_native_window_frame)
 
         # Container for main content + sidebar
         content_wrapper = QWidget()
@@ -826,8 +862,54 @@ class MainWindow(QMainWindow):
             self.title_bar.setStyleSheet(self.title_bar._TITLE_BAR_STYLE)
             self.title_bar.title_label.setStyleSheet(self.title_bar._TITLE_LABEL_STYLE)
             self.title_bar.menu_bar.setStyleSheet(self.title_bar._MENU_BAR_STYLE)
+        self._apply_windows_frame_theme(theme_name)
         if persist:
             values = settings_manager.load_all_settings(); values[SettingsKey.THEME] = theme_name; settings_manager.save_all_settings(values)
+
+    def _apply_windows_frame_theme(self, theme_name: str = "") -> None:
+        """Match the native Windows 11 title bar and outline to the app theme."""
+        if not self._use_native_window_frame:
+            return
+        try:
+            import ctypes
+
+            resolved_theme = theme_name or (
+                "dark" if self.voice_notes_workspace.dark else "light"
+            )
+            hwnd = ctypes.c_void_p(int(self.winId()))
+            dark_mode = ctypes.c_int(1 if resolved_theme == "dark" else 0)
+            rounded_corners = ctypes.c_int(2)  # DWMWCP_ROUND
+            # COLORREF uses BGR byte order.  Keep the outline subtle, like the
+            # rest of the workspace dividers.
+            border_rgb = (
+                (43, 55, 73)
+                if resolved_theme == "dark"
+                else (226, 232, 240)
+            )
+            border_color = ctypes.c_uint(
+                border_rgb[0] | border_rgb[1] << 8 | border_rgb[2] << 16
+            )
+            dwm = ctypes.windll.dwmapi
+            dwm.DwmSetWindowAttribute(
+                hwnd, 20, ctypes.byref(dark_mode), ctypes.sizeof(dark_mode)
+            )
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                33,
+                ctypes.byref(rounded_corners),
+                ctypes.sizeof(rounded_corners),
+            )
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                34,
+                ctypes.byref(border_color),
+                ctypes.sizeof(border_color),
+            )
+        except Exception:
+            logger.debug(
+                "Could not apply native Windows frame styling",
+                exc_info=True,
+            )
 
     def _update_recording_state(self):
         """Update UI states based on recording status."""
@@ -1070,10 +1152,9 @@ class MainWindow(QMainWindow):
             self._resize_animation.stop()
 
         if compact:
-            if self.title_bar._is_maximized:
-                self.title_bar._toggle_maximize()
-            elif self.isMaximized():
+            if self.isMaximized():
                 self.showNormal()
+                self.title_bar.sync_window_state(False)
 
             self._full_geometry = QRect(self.geometry())
             self._save_geometry()
@@ -1084,8 +1165,9 @@ class MainWindow(QMainWindow):
             self.compact_controller.show()
             self.history_edge_tab.hide()
             self.history_sidebar.hide()
-            self.title_bar.title_label.hide()
-            self.title_bar.maximize_btn.hide()
+            if not self._use_native_window_frame:
+                self.title_bar.title_label.hide()
+                self.title_bar.maximize_btn.hide()
             self.compact_button.setText("Полный размер")
 
             self.setMinimumSize(0, 0)
@@ -1103,14 +1185,20 @@ class MainWindow(QMainWindow):
                 config.MAIN_WINDOW_MIN_WIDTH,
                 config.MAIN_WINDOW_MIN_HEIGHT,
             )
-            self.setMaximumSize(config.MAIN_WINDOW_MAX_WIDTH, UNLIMITED_HEIGHT)
+            maximum_width = (
+                UNLIMITED_HEIGHT
+                if self._use_native_window_frame
+                else config.MAIN_WINDOW_MAX_WIDTH
+            )
+            self.setMaximumSize(maximum_width, UNLIMITED_HEIGHT)
             self.compact_controller.hide()
             self.tabbed_content.hide()
             self.voice_notes_workspace.show()
             self.history_edge_tab.hide()
             self.history_sidebar.hide()
-            self.title_bar.title_label.show()
-            self.title_bar.maximize_btn.show()
+            if not self._use_native_window_frame:
+                self.title_bar.title_label.show()
+                self.title_bar.maximize_btn.show()
             self.compact_button.setText("Компактный режим")
 
             if self._full_geometry is not None:
@@ -1183,11 +1271,15 @@ class MainWindow(QMainWindow):
         """
         logger.info("Restoring window from tray")
         # Drop any minimized bit and mark the window active before showing.
-        self.setWindowState(
-            (self.windowState() & ~Qt.WindowState.WindowMinimized)
-            | Qt.WindowState.WindowActive
-        )
-        self.showNormal()
+        restored_state = (
+            self.windowState() & ~Qt.WindowState.WindowMinimized
+        ) | Qt.WindowState.WindowActive
+        was_maximized = bool(restored_state & Qt.WindowState.WindowMaximized)
+        self.setWindowState(restored_state)
+        if was_maximized:
+            self.showMaximized()
+        else:
+            self.showNormal()
         self.raise_()
         self.activateWindow()
 
@@ -1386,7 +1478,7 @@ class MainWindow(QMainWindow):
             Tuple of (horizontal_edge, vertical_edge) where each is:
             -1 for left/top, 0 for none, 1 for right/bottom.
         """
-        if self._compact_mode:
+        if self._compact_mode or self._use_native_window_frame:
             return (0, 0)
 
         rect = self.rect()
@@ -1643,6 +1735,12 @@ class MainWindow(QMainWindow):
         """Handle move event to save geometry."""
         super().moveEvent(event)
         self._schedule_geometry_save()
+
+    def changeEvent(self, event):
+        """Synchronize custom controls with native maximize/restore actions."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self.title_bar.sync_window_state(self.isMaximized())
 
     def showEvent(self, event):
         """Handle show event - restore geometry when showing from tray."""

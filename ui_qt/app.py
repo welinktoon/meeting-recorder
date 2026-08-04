@@ -15,7 +15,7 @@ from ui_qt.utils.tooltip_filter import RoundedTooltipFilter, SnappyTooltipStyle
 from ui_qt.utils.russian_localizer import RussianLocalizer
 from version import APP_PUBLISHER, __version__
 
-APP_NAME = "Запись встреч"
+APP_NAME = "Svodika"
 APP_ICON = (
     Path(__file__).resolve().parent
     / "assets"

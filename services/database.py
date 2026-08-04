@@ -313,6 +313,22 @@ class DatabaseManager:
             entry.cleanup_model = cleanup_model
             return True
 
+    def update_history_audio_file(
+        self,
+        entry_id: str,
+        audio_file: str,
+        file_size: Optional[int] = None,
+    ) -> bool:
+        """Update a history row after its media file was renamed externally."""
+        with self.get_session() as session:
+            entry = session.get(TranscriptionHistory, entry_id)
+            if entry is None:
+                return False
+            entry.audio_file = audio_file
+            if file_size is not None:
+                entry.file_size = file_size
+            return True
+
     def delete_history_entry(self, entry_id: str) -> bool:
         with self.get_session() as session:
             entry = session.get(TranscriptionHistory, entry_id)

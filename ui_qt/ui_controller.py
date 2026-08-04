@@ -923,7 +923,7 @@ class UIController(QObject):
         QMessageBox.about(
             self.main_window,
             "О приложении",
-            "<p><b>Запись встреч</b></p>"
+            "<p><b>Svodika</b></p>"
             f"<p>Версия {__version__} · welinkton</p>"
             "<p>Локальное приложение для записи звука и расшифровки речи.</p>"
             "<p>Возможности:<br>"
@@ -963,6 +963,7 @@ class UIController(QObject):
         audio_path: str,
         transcript: str,
         history_entry_id: str,
+        mode: str,
     ):
         """Run Codex on an existing transcript without rerunning Whisper."""
         if self.on_codex_improve:
@@ -970,6 +971,7 @@ class UIController(QObject):
                 audio_path,
                 transcript,
                 history_entry_id,
+                mode,
             )
 
     def _request_retranscription(self, audio_path: str):

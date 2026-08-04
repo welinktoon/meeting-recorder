@@ -8,18 +8,36 @@ This backend uses faster-whisper (CTranslate2) which provides:
 - No external FFmpeg dependency (uses PyAV)
 """
 import logging
-from typing import Callable, Optional, List, Tuple
-from faster_whisper import WhisperModel
+from typing import Any, Callable, Optional, List, Tuple
 from .base import TranscriptionBackend
 from config import config
 
 logger = logging.getLogger(__name__)
 
+# Kept as a patchable module attribute for tests and integrations, while the
+# actual faster-whisper package remains lazily imported.
+WhisperModel = None
+
+
+def _get_whisper_model_class():
+    global WhisperModel
+    if WhisperModel is None:
+        from faster_whisper import WhisperModel as model_class
+
+        WhisperModel = model_class
+    return WhisperModel
+
 
 class LocalWhisperBackend(TranscriptionBackend):
     """Local Whisper model transcription backend using faster-whisper."""
 
-    def __init__(self, model_name: str = None, device: str = None, compute_type: str = None):
+    def __init__(
+        self,
+        model_name: str = None,
+        device: str = None,
+        compute_type: str = None,
+        autoload: bool = True,
+    ):
         """Initialize the local faster-whisper backend.
 
         Args:
@@ -36,14 +54,15 @@ class LocalWhisperBackend(TranscriptionBackend):
             settings = settings_manager.load_all_settings()
             model_name = settings.get(SettingsKey.WHISPER_MODEL, config.DEFAULT_WHISPER_MODEL)
         self.model_name = model_name  # May be "auto", resolved in _load_model
-        self.model: Optional[WhisperModel] = None
+        self.model: Optional[Any] = None
         self._device: Optional[str] = None
         self._compute_type: Optional[str] = None
         self._override_device = device  # Store override values
         self._override_compute_type = compute_type
         self._model_missing = False
         self._last_loaded_model: Optional[str] = None
-        self._load_model()
+        if autoload:
+            self._load_model()
 
     def _cuda_is_available(self) -> bool:
         """Check whether a usable CUDA device is present.
@@ -185,6 +204,10 @@ class LocalWhisperBackend(TranscriptionBackend):
         ``download_and_load``).
         """
         try:
+            # Importing faster-whisper pulls in PyAV and CTranslate2. Keep that
+            # cost off the critical path so the main window can open first.
+            model_class = _get_whisper_model_class()
+
             self._device, self._compute_type, detected_model = self._detect_hardware()
 
             # Use detected model if current model is "auto"
@@ -208,7 +231,7 @@ class LocalWhisperBackend(TranscriptionBackend):
                 f"(device={self._device}, compute_type={self._compute_type})"
             )
 
-            self.model = WhisperModel(
+            self.model = model_class(
                 self.model_name,
                 device=self._device,
                 compute_type=self._compute_type,
@@ -288,11 +311,14 @@ class LocalWhisperBackend(TranscriptionBackend):
 
     def _transcribe_file_once(self, audio_path: str, vad_params: Optional[dict]) -> str:
         """Run one complete model pass and consume its lazy segment generator."""
+        from services.settings import resolve_transcription_language
+
         segments, info = self.model.transcribe(
             audio_path,
             beam_size=config.FASTER_WHISPER_BEAM_SIZE,
             vad_filter=config.FASTER_WHISPER_VAD_ENABLED,
             vad_parameters=vad_params,
+            language=resolve_transcription_language(),
         )
 
         logger.info(
@@ -340,7 +366,7 @@ class LocalWhisperBackend(TranscriptionBackend):
             failed_device,
             failed_compute_type,
         )
-        self.model = WhisperModel(
+        self.model = _get_whisper_model_class()(
             self.model_name,
             device=self._device,
             compute_type=self._compute_type,

@@ -83,7 +83,7 @@ version_info = VSVersionInfo(
                             "OriginalFilename",
                             "MeetingRecorder.exe",
                         ),
-                        StringStruct("ProductName", "Запись встреч"),
+                        StringStruct("ProductName", "Svodika"),
                         StringStruct("ProductVersion", VERSION),
                     ],
                 )

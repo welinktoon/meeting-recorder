@@ -65,9 +65,17 @@ class ApplicationController(QObject):
     codex_improvement_completed = pyqtSignal(str, str)
     codex_improvement_failed = pyqtSignal(str, str)
 
-    def __init__(self, ui_controller, local_backend: Optional[LocalWhisperBackend] = None):
+    def __init__(
+        self,
+        ui_controller,
+        local_backend: Optional[LocalWhisperBackend] = None,
+        defer_local_backend: bool = False,
+    ):
         super().__init__()
         self.ui_controller = ui_controller
+        self._defer_local_backend = bool(
+            defer_local_backend and local_backend is None
+        )
 
         saved_device_id = settings_manager.load_audio_input_device()
         self.recorder = AudioRecorder(device_id=saved_device_id)
@@ -122,7 +130,11 @@ class ApplicationController(QObject):
         logger.info("Setting up transcription backends...")
 
         self.transcription_backends["local_whisper"] = (
-            local_backend if local_backend is not None else LocalWhisperBackend()
+            local_backend
+            if local_backend is not None
+            else LocalWhisperBackend(autoload=False)
+            if self._defer_local_backend
+            else LocalWhisperBackend()
         )
         self.transcription_backends["api_whisper"] = OpenAIBackend("api_whisper")
         self.transcription_backends["api_gpt4o"] = OpenAIBackend("api_gpt4o")
@@ -226,8 +238,19 @@ class ApplicationController(QObject):
         — after the main UI is available, never during startup, and never for
         API-only users.
         """
-        if isinstance(self.current_backend, LocalWhisperBackend):
-            QTimer.singleShot(0, self.ensure_local_model_available)
+        if not isinstance(self.current_backend, LocalWhisperBackend):
+            return
+        if (
+            self._defer_local_backend
+            and not self.current_backend.is_available()
+            and not self.current_backend.is_model_missing
+        ):
+            self._reload_in_flight = True
+            self.engine_busy_changed.emit(True)
+            self.status_update.emit("Модель загружается в фоне…")
+            self.executor.submit(self._reload_worker)
+            return
+        QTimer.singleShot(0, self.ensure_local_model_available)
 
     def on_hf_policy_changed(self, policy: str) -> None:
         """React to a Hugging Face access-policy change from Settings.
@@ -622,12 +645,14 @@ class ApplicationController(QObject):
         audio_path: str,
         transcript: str,
         history_entry_id: str = "",
+        mode: str = "",
     ) -> None:
         """Improve a saved transcript on explicit user request."""
         self.transcription_runtime.improve_existing_transcript(
             audio_path,
             transcript,
             history_entry_id,
+            mode,
         )
 
     def on_model_changed(self, model_name: str) -> None:

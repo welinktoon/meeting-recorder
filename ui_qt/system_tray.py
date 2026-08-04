@@ -45,7 +45,7 @@ class SystemTrayManager(QSystemTrayIcon):
     def _setup_icon(self):
         """Setup the tray icon."""
         self.setIcon(QIcon(str(APP_ICON)))
-        self.setToolTip("Запись встреч")
+        self.setToolTip("Svodika")
 
     def _setup_menu(self):
         """Setup the tray context menu."""
@@ -84,7 +84,18 @@ class SystemTrayManager(QSystemTrayIcon):
 
     def _on_activated(self, reason):
         """Handle tray icon activation."""
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            if (
+                self.main_window
+                and self.main_window.isVisible()
+                and not self.main_window.isMinimized()
+            ):
+                self._on_hide()
+            else:
+                self._on_show()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            # A double-click always leaves the app visible, even on platforms
+            # that report the first click separately as Trigger.
             self._on_show()
 
     def _on_show(self):

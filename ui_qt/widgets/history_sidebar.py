@@ -38,12 +38,17 @@ _MENU_STYLESHEET = """
         color: #f5f5f7;
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 10px;
-        padding: 6px;
+        padding: 8px 10px;
     }
     QMenu::item {
-        padding: 8px 28px 8px 14px;
+        padding: 8px 28px 8px 20px;
         border-radius: 6px;
         font-size: 13px;
+    }
+    QMenu::indicator,
+    QMenu::icon {
+        position: relative;
+        left: 8px;
     }
     QMenu::item:selected {
         background-color: #0a84ff;

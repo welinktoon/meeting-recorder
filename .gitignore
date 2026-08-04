@@ -39,6 +39,7 @@ installer-output/
 
 # Local QA and launch artifacts
 docs/qa/
+artifacts/
 design-qa.md
 docs/voice-notes-plan.md
 *.lnk

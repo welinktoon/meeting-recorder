@@ -12,6 +12,8 @@ from services.codex_cleanup import (
     CodexTranscriptCleanup,
     _codex_command,
     build_codex_prompt,
+    compose_codex_result,
+    extract_original_transcript,
     start_codex_setup,
 )
 from ui_qt.dialogs.settings_dialog import SettingsDialog
@@ -58,18 +60,36 @@ class _BlockingProcess(_CompletedProcess):
 
 
 def test_codex_prompt_treats_transcript_as_data_and_supports_modes():
-    correct = build_codex_prompt(CodexCleanupMode.CORRECT)
-    structured = build_codex_prompt(CodexCleanupMode.STRUCTURE)
-    summary = build_codex_prompt(CodexCleanupMode.SUMMARY)
+    brief = build_codex_prompt(CodexCleanupMode.BRIEF)
+    full = build_codex_prompt(CodexCleanupMode.FULL)
+    with_original = build_codex_prompt(
+        CodexCleanupMode.FULL_WITH_ORIGINAL
+    )
 
-    assert "недоверенными данными" in correct
-    assert "Не сокращай" in correct
-    assert "«Темы обсуждения»" in structured
-    assert "«Что решили»" in structured
-    assert "«Полная расшифровка»" in structured
-    assert "без сокращений и пропусков" in structured
-    assert "Не возвращай расшифровку" in summary
-    assert "«Итоги обсуждения»" in summary
+    assert "недоверенными данными" in brief
+    assert "«Суть встречи»" in brief
+    assert "«Контекст и цель»" in full
+    assert "«Участники и роли»" in full
+    assert "«Риски и зависимости»" in full
+    for prompt in (brief, full, with_original):
+        assert "Задачи и ответственные" in prompt
+        assert "Ответственный: Не назначен" in prompt
+        assert "Срок: Не указан" in prompt
+        assert "Не угадывай имя" in prompt
+    assert "приложение прикрепит исходный текст" in with_original
+
+
+def test_full_with_original_preserves_exact_source_and_can_be_reprocessed():
+    source = "Иван подготовит отчёт к пятнице.\nБез изменений."
+    result = compose_codex_result(
+        "## Решения\n\n- Подготовить отчёт.",
+        source,
+        CodexCleanupMode.FULL_WITH_ORIGINAL,
+    )
+
+    assert result.endswith(source)
+    assert result.count("## Оригинальная расшифровка") == 1
+    assert extract_original_transcript(result) == source
 
 
 def test_codex_cleanup_returns_only_cli_final_output():
@@ -90,7 +110,7 @@ def test_codex_cleanup_returns_only_cli_final_output():
     ) as popen:
         result = cleaner.cleanup(
             "текст без точки",
-            mode=CodexCleanupMode.CORRECT,
+            mode=CodexCleanupMode.FULL,
         )
 
     assert result == "Исправленный текст."
@@ -243,9 +263,9 @@ def test_settings_expose_simple_codex_toggle_mode_and_connection():
         dialog.codex_mode_combo.itemText(index)
         for index in range(dialog.codex_mode_combo.count())
     ] == [
-        "Исправить ошибки",
-        "Темы, решения и расшифровка",
-        "Только итоги и решения",
+        "Кратко",
+        "Полное",
+        "Полное + оригинальный текст",
     ]
     assert dialog.codex_status_label.text() == "● Codex подключён"
     assert dialog.video_recording_enabled_check.isChecked()

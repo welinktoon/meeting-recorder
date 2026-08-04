@@ -83,7 +83,7 @@ class FakeSettingsManager:
             "auto_paste": False,
             "transcript_cleanup_enabled": False,
             "codex_cleanup_enabled": False,
-            "codex_cleanup_mode": "correct",
+            "codex_cleanup_mode": "full",
             "codex_cleanup_trigger": "manual",
         }
         self.saved_model_selection = None
@@ -180,16 +180,17 @@ class FakeHotkeyManager:
 class FakeLocalBackend:
     requires_file_splitting = False
 
-    def __init__(self, model_name=None):
+    def __init__(self, model_name=None, autoload=True):
         self.model_name = model_name or "base"
         self.device_info = "cpu"
         self.is_transcribing = False
         self.cleaned_up = False
         self.is_model_missing = False
         self.last_loaded_model = self.model_name
+        self.available = autoload
 
     def is_available(self):
-        return not self.is_model_missing
+        return self.available and not self.is_model_missing
 
     def transcribe(self, audio_path):
         return f"local:{audio_path}"
@@ -207,6 +208,7 @@ class FakeLocalBackend:
         # Mirrors a successful cache-only load
         self.is_model_missing = False
         self.last_loaded_model = self.model_name
+        self.available = True
 
     def cleanup(self):
         self.cleaned_up = True
@@ -284,8 +286,19 @@ class FakeHistoryManager:
         self.entries.append(kwargs)
         return kwargs
 
-    def save_transcript_version(self, audio_path, text, model="", variant=""):
-        self.transcript_versions.append((audio_path, text, model, variant))
+    def save_transcript_version(
+        self,
+        audio_path,
+        text,
+        model="",
+        variant="",
+        history_entry_id="",
+        original_text="",
+    ):
+        saved = (audio_path, text, model, variant)
+        if history_entry_id or original_text:
+            saved += (history_entry_id, original_text)
+        self.transcript_versions.append(saved)
         return audio_path + (".codex.md" if variant == "codex" else ".txt")
 
     def get_entry_by_id(self, entry_id):
@@ -734,6 +747,34 @@ class TestApplicationController(unittest.TestCase):
         # Idle after reload refreshes the manager so Delete tracks the new model.
         self.assertGreaterEqual(controller.ui_controller.model_manager_refreshes, 1)
 
+    def test_deferred_local_backend_load_starts_after_main_ui_is_ready(self):
+        controller = self.app_controller_module.ApplicationController(
+            DummyUIController(),
+            defer_local_backend=True,
+        )
+        controller.executor.shutdown(wait=False)
+        controller.executor = FakeExecutor()
+        backend = controller.transcription_backends["local_whisper"]
+
+        self.assertFalse(backend.is_available())
+
+        controller.notify_main_ui_ready()
+
+        self.assertEqual(len(controller.executor.submissions), 1)
+        self.assertTrue(controller._reload_in_flight)
+        self.assertEqual(controller.ui_controller.engine_busy_states[-1], True)
+        self.assertIn(
+            "Модель загружается в фоне…",
+            controller.ui_controller.statuses,
+        )
+
+        fn, args = controller.executor.submissions[0]
+        fn(*args)
+
+        self.assertTrue(backend.is_available())
+        self.assertFalse(controller._reload_in_flight)
+        self.assertEqual(controller.ui_controller.engine_busy_states[-1], False)
+
     def test_declined_download_reverts_model_selection(self):
         controller = self._create_controller()
         backend = controller.transcription_backends["local_whisper"]
@@ -1002,7 +1043,7 @@ class TestApplicationController(unittest.TestCase):
     def test_codex_cleanup_saves_raw_first_and_marks_enhanced_version(self):
         controller = self._create_controller()
         self.settings.all_settings["codex_cleanup_enabled"] = True
-        self.settings.all_settings["codex_cleanup_mode"] = "structure"
+        self.settings.all_settings["codex_cleanup_mode"] = "full"
         self.settings.all_settings["codex_cleanup_trigger"] = "automatic"
         clip_path = str(Path(self.temp_dir.name) / "codex-clip.wav")
         Path(clip_path).write_bytes(b"RIFF")
@@ -1013,8 +1054,8 @@ class TestApplicationController(unittest.TestCase):
             def transcribe(self, _path):
                 return "сырой текст без знаков"
 
-        def clean(text, mode="correct", extra_prompt=""):
-            self.assertEqual(mode, "structure")
+        def clean(text, mode="full", extra_prompt=""):
+            self.assertEqual(mode, "full")
             self.assertEqual(text, "сырой текст без знаков")
             controller.transcription_runtime._codex_cleanup.last_error = None
             return "Сырой текст без знаков."
@@ -1035,7 +1076,7 @@ class TestApplicationController(unittest.TestCase):
         self.assertEqual(entry["text"], "Сырой текст без знаков.")
         self.assertEqual(entry["raw_text"], "сырой текст без знаков")
         self.assertEqual(entry["cleanup_provider"], "codex")
-        self.assertEqual(entry["cleanup_model"], "structure")
+        self.assertEqual(entry["cleanup_model"], "full")
         self.assertIn(
             "Готово — улучшено в Codex",
             controller.ui_controller.statuses,
@@ -1044,7 +1085,7 @@ class TestApplicationController(unittest.TestCase):
     def test_manual_codex_improves_saved_text_without_running_whisper(self):
         controller = self._create_controller()
         self.settings.all_settings["codex_cleanup_enabled"] = True
-        self.settings.all_settings["codex_cleanup_mode"] = "structure"
+        self.settings.all_settings["codex_cleanup_mode"] = "brief"
         self.settings.all_settings["codex_cleanup_trigger"] = "manual"
         audio_path = str(Path(self.temp_dir.name) / "saved-meeting.wav")
         Path(audio_path).write_bytes(b"RIFF")
@@ -1056,6 +1097,8 @@ class TestApplicationController(unittest.TestCase):
                 "Модель: medium\n\n"
                 "сырой текст встречи"
             ),
+            "history-entry-id",
+            "full_with_original",
         )
 
         self.assertEqual(len(controller.executor.submissions), 1)
@@ -1066,9 +1109,9 @@ class TestApplicationController(unittest.TestCase):
         )
         self.assertEqual(args[0], audio_path)
         self.assertEqual(args[1], "сырой текст встречи")
-        self.assertEqual(args[2], "structure")
+        self.assertEqual(args[2], "full_with_original")
 
-        def clean(text, mode="correct", extra_prompt=""):
+        def clean(text, mode="full", extra_prompt=""):
             controller.transcription_runtime._codex_cleanup.last_error = None
             return "Структурированный текст встречи."
 
@@ -1080,8 +1123,10 @@ class TestApplicationController(unittest.TestCase):
             (
                 audio_path,
                 "Структурированный текст встречи.",
-                "structure",
+                "full_with_original",
                 "codex",
+                "history-entry-id",
+                "сырой текст встречи",
             ),
         )
         self.assertEqual(
@@ -1096,7 +1141,7 @@ class TestApplicationController(unittest.TestCase):
     def test_manual_codex_improves_database_only_entry_without_audio(self):
         controller = self._create_controller()
         self.settings.all_settings["codex_cleanup_enabled"] = True
-        self.settings.all_settings["codex_cleanup_mode"] = "structure"
+        self.settings.all_settings["codex_cleanup_mode"] = "brief"
         entry_id = "database-only-entry"
         self.history_manager.history_entry_ids.add(entry_id)
 
@@ -1104,12 +1149,13 @@ class TestApplicationController(unittest.TestCase):
             "",
             "сырой текст старой встречи",
             entry_id,
+            "full",
         )
 
         self.assertEqual(len(controller.executor.submissions), 1)
         worker, args = controller.executor.submissions[0]
 
-        def clean(text, mode="correct", extra_prompt=""):
+        def clean(text, mode="full", extra_prompt=""):
             controller.transcription_runtime._codex_cleanup.last_error = None
             return "Улучшенный текст старой встречи."
 
@@ -1122,7 +1168,7 @@ class TestApplicationController(unittest.TestCase):
                 entry_id,
                 "сырой текст старой встречи",
                 "Улучшенный текст старой встречи.",
-                "structure",
+                "full",
             )],
         )
         self.assertEqual(

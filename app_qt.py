@@ -1,6 +1,7 @@
 """Thin compatibility entrypoint for the Qt application"""
 
 import os
+import logging
 import platform
 import site
 import subprocess
@@ -89,5 +90,21 @@ from ui_qt.bootstrap import main
 __all__ = ["main"]
 
 
+def _exit_after_qt_cleanup(exit_code: int) -> None:
+    """Exit a frozen Windows build without re-running Qt/SIP destructors.
+
+    ``bootstrap.main`` has already stopped workers, closed the database, hidden
+    the tray icon, destroyed the windows, and released its native handles when
+    it returns.  Letting the frozen interpreter then finalize the same PyQt
+    wrappers a second time can raise a native access violation in ``sip.pyd``.
+    Source runs keep normal ``SystemExit`` semantics for debuggability.
+    """
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        logging.shutdown()
+        os._exit(int(exit_code))
+        return
+    raise SystemExit(exit_code)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    _exit_after_qt_cleanup(main())

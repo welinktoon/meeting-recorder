@@ -23,6 +23,7 @@ from services.settings import (
     OverlayBadge,
     RecordingRetentionMode,
     SettingsKey,
+    TranscriptionLanguage,
     TranscriptCleanupModelSort,
     TranscriptCleanupProvider,
     TranscriptCleanupReasoning,
@@ -33,6 +34,7 @@ from services.settings import (
     resolve_codex_cleanup_mode,
     resolve_codex_cleanup_trigger,
     resolve_streaming_overlay_font_size,
+    resolve_transcription_language,
     resolve_transcript_cleanup_model,
     resolve_transcript_cleanup_model_sort,
     resolve_transcript_cleanup_prompt,
@@ -132,7 +134,7 @@ class SettingsDialog(QDialog):
         Keeping the mapping here avoids changing the underlying persisted enum
         values while making every visible label appropriate for this app.
         """
-        self.setWindowTitle("Настройки — Запись встреч")
+        self.setWindowTitle("Настройки — Svodika")
         texts = {
             "General": "Основные", "Audio": "Аудио", "Hotkeys": "Горячие клавиши",
             "Cleanup": "Обработка текста", "Advanced": "Дополнительно",
@@ -262,8 +264,8 @@ class SettingsDialog(QDialog):
         """Create a consistent scrollable settings page."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(30, 28, 30, 30)
-        layout.setSpacing(18)
+        layout.setContentsMargins(28, 22, 28, 28)
+        layout.setSpacing(12)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -332,6 +334,33 @@ class SettingsDialog(QDialog):
         """Group transcript delivery, preview, badges, and model access."""
         scroll_area, layout = self._scrollable_tab()
 
+        layout.addWidget(self._section_label("Распознавание"))
+        language_layout = QHBoxLayout()
+        language_layout.setSpacing(12)
+        language_layout.addWidget(QLabel("Язык распознавания"))
+        self.transcription_language_combo = NoWheelComboBox()
+        self.transcription_language_combo.setObjectName(
+            "transcriptionLanguageCombo"
+        )
+        self.transcription_language_combo.addItem(
+            "Русский",
+            TranscriptionLanguage.RUSSIAN,
+        )
+        self.transcription_language_combo.addItem(
+            "English",
+            TranscriptionLanguage.ENGLISH,
+        )
+        self.transcription_language_combo.setMinimumHeight(36)
+        language_layout.addWidget(self.transcription_language_combo, 1)
+        layout.addLayout(language_layout)
+        language_info = QLabel(
+            "Выбранный язык применяется к итоговой расшифровке записи."
+        )
+        language_info.setObjectName("infoLabel")
+        language_info.setWordWrap(True)
+        layout.addWidget(language_info)
+
+        layout.addSpacing(16)
         layout.addWidget(self._section_label("После расшифровки"))
         self.auto_paste_check = QCheckBox(
             "Вставлять расшифровку в активное окно"
@@ -455,8 +484,8 @@ class SettingsDialog(QDialog):
 
         layout.addSpacing(16)
         layout.addWidget(self._section_label("Хранение записей"))
-        layout.addWidget(QLabel("Хранить записи"))
         self.recording_retention_combo = NoWheelComboBox()
+        self.recording_retention_combo.setAccessibleName("Хранение записей")
         self.recording_retention_combo.addItem(
             "Хранить все",
             RecordingRetentionMode.KEEP_ALL,
@@ -483,13 +512,13 @@ class SettingsDialog(QDialog):
         custom_count_layout.addStretch()
         layout.addLayout(custom_count_layout)
 
-        retention_info = QLabel(
+        self.retention_info = QLabel(
             "При превышении лимита удаляются старые аудио- и видеофайлы. "
             "Тексты расшифровок сохраняются."
         )
-        retention_info.setObjectName("infoLabel")
-        retention_info.setWordWrap(True)
-        layout.addWidget(retention_info)
+        self.retention_info.setObjectName("infoLabel")
+        self.retention_info.setWordWrap(True)
+        layout.addWidget(self.retention_info)
 
         layout.addWidget(QLabel("Папка для записей"))
         folder_row = QHBoxLayout()
@@ -920,13 +949,18 @@ class SettingsDialog(QDialog):
         self.check_updates_button.setEnabled(not busy)
 
     def _update_recording_retention_ui(self):
-        """Enable the custom count spinbox only when Custom is selected."""
+        """Show the recording limit only when the custom mode needs it."""
         is_custom = (
             self.recording_retention_combo.currentData()
             == RecordingRetentionMode.CUSTOM
         )
-        self.max_recordings_label.setEnabled(is_custom)
-        self.max_recordings_spinbox.setEnabled(is_custom)
+        for widget in (
+            self.max_recordings_label,
+            self.max_recordings_spinbox,
+            self.retention_info,
+        ):
+            widget.setVisible(is_custom)
+            widget.setEnabled(is_custom)
 
     def _update_streaming_font_ui(self):
         """Enable the preview font size control only when streaming is on."""
@@ -1400,6 +1434,7 @@ class SettingsDialog(QDialog):
 
         combos = [
             self.audio_device_combo,
+            self.transcription_language_combo,
             self.codex_mode_combo,
             self.codex_trigger_combo,
             self.cleanup_provider_combo,
@@ -1446,6 +1481,10 @@ class SettingsDialog(QDialog):
     def _collect_form_state(self):
         """Collect only controls that are backed by real persisted behavior."""
         return {
+            "transcription_language": (
+                self.transcription_language_combo.currentData()
+                or TranscriptionLanguage.DEFAULT
+            ),
             "auto_paste": self.auto_paste_check.isChecked(),
             "copy_clipboard": self.copy_clipboard_check.isChecked(),
             "codex_cleanup": self.codex_cleanup_check.isChecked(),
@@ -1496,6 +1535,13 @@ class SettingsDialog(QDialog):
         """Load settings from configuration."""
         try:
             settings = settings_manager.load_all_settings()
+
+            language_index = self.transcription_language_combo.findData(
+                resolve_transcription_language(settings)
+            )
+            self.transcription_language_combo.setCurrentIndex(
+                max(0, language_index)
+            )
 
             # Load checkboxes
             self.auto_paste_check.setChecked(settings.get(SettingsKey.AUTO_PASTE, True))
@@ -1631,6 +1677,7 @@ class SettingsDialog(QDialog):
             # Use defaults on error
             self.auto_paste_check.setChecked(True)
             self.copy_clipboard_check.setChecked(True)
+            self.transcription_language_combo.setCurrentIndex(0)
             self.codex_cleanup_check.setChecked(False)
             self.codex_mode_combo.setCurrentIndex(0)
             self._update_codex_cleanup_ui()
@@ -1709,12 +1756,16 @@ class SettingsDialog(QDialog):
             # Update with new values
             settings[SettingsKey.AUTO_PASTE] = self.auto_paste_check.isChecked()
             settings[SettingsKey.COPY_CLIPBOARD] = self.copy_clipboard_check.isChecked()
+            settings[SettingsKey.TRANSCRIPTION_LANGUAGE] = (
+                self.transcription_language_combo.currentData()
+                or TranscriptionLanguage.DEFAULT
+            )
             settings[SettingsKey.CODEX_CLEANUP_ENABLED] = (
                 self.codex_cleanup_check.isChecked()
             )
             settings[SettingsKey.CODEX_CLEANUP_MODE] = (
                 self.codex_mode_combo.currentData()
-                or CodexCleanupMode.CORRECT
+                or CodexCleanupMode.FULL
             )
             settings[SettingsKey.CODEX_CLEANUP_TRIGGER] = (
                 self.codex_trigger_combo.currentData()

@@ -77,7 +77,7 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          name: Запись встреч ${{ steps.version.outputs.version }}
+          name: Svodika ${{ steps.version.outputs.version }}
           generate_release_notes: true
           files: |
             installer-output/MeetingRecorderSetup-${{ steps.version.outputs.version }}.exe
